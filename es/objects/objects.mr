@@ -88,6 +88,17 @@ private node _engine => __engine_sim__engine {
 
     input simulation_frequency [float];
     input hf_gain [float];
+    input hf_cutoff [float];
+    input hf_bite_cutoff [float];
+    input hf_bite_min_speed [float];
+    input hf_bite_max_speed [float];
+    input fluid_simulation_steps [int];
+    input leveler_target [float];
+    input overrun_fuel_rate [float];
+    input overrun_throttle_threshold [float];
+    input overrun_min_speed [float];
+    input overrun_duration [float];
+    input overrun_ignition_cut [float];
     input jitter [float];
     input noise [float];
 
@@ -112,6 +123,47 @@ public node engine {
 
     input simulation_frequency: 10000;
     input hf_gain: 0.01;
+    // Brightness ceiling in Hz for the whole engine note. 0 = auto, which tracks
+    // 0.45 * simulation_frequency.
+    // DEFAULTS TO 1900 ON PURPOSE: that is the value upstream hard-coded, and
+    // every stock engine in assets/engines was voiced by ear against it. Making
+    // "auto" the default would silently rebrighten all of them. New engines that
+    // want the full bandwidth opt in with `hf_cutoff: 0`, as v12_gintani does.
+    input hf_cutoff: 1900;
+    // Ceiling (Hz) on the hf_gain "bite" term only. hf_gain differentiates the
+    // signal, and a derivative amplifies +6 dB/octave, so without a ceiling it
+    // boosts the fluid solver's own sample-to-sample hash as hard as it boosts
+    // the exhaust note. That hash does not grow with rpm, so it is inaudible at
+    // full throttle and a metallic clank at idle. Set this above the highest
+    // firing harmonic worth hearing and below the hash. 0 = off (upstream
+    // behaviour); default off so stock engines are untouched.
+    input hf_bite_cutoff: 0;
+    // Engine-speed window over which the hf_gain bite fades in. Below min there
+    // is no bite at all, above max it is at full hf_gain. This is what keeps a
+    // clean idle and a harsh redline out of one hf_gain value -- and it matches
+    // reality, where broadband exhaust noise climbs steeply with gas velocity.
+    // Leave max <= min (the default) to disable the ramp entirely.
+    input hf_bite_min_speed: 0 * units.rpm;
+    input hf_bite_max_speed: 0 * units.rpm;
+    // Gas-system substeps per simulation step (1-16). Cost multiplies against
+    // simulation_frequency -- lower this to afford a higher simulation_frequency.
+    input fluid_simulation_steps: 8;
+    // Auto-leveler peak target out of 32767. The leveler has no lookahead, so a
+    // transient larger than its running peak is emitted at the old gain and
+    // clips. Lower this to buy headroom; 30000 leaves only 0.8 dB.
+    input leveler_target: 30000;
+    // Overrun 'pop tune' fuel enrichment: moles of fuel per second
+    // pushed into the headers while lifted, so the hot pipe has
+    // something to crack on. 0 = off.
+    input overrun_fuel_rate: 0.0;
+    input overrun_throttle_threshold: 0.15;
+    input overrun_min_speed: 2000 * units.rpm;
+    // Seconds of crackle per lift-off; re-arms when you get back on
+    // the throttle. Real decel pops fade, they do not run to a stop.
+    input overrun_duration: 1.2;
+    // Fraction of ignition events killed while crackling. Keep well
+    // under 1.0 -- a total cut stalls the engine.
+    input overrun_ignition_cut: 0.45;
     input jitter: 0.5;
     input noise: 1.0;
 
@@ -131,6 +183,17 @@ public node engine {
 
             simulation_frequency: simulation_frequency,
             hf_gain: hf_gain,
+            hf_cutoff: hf_cutoff,
+            hf_bite_cutoff: hf_bite_cutoff,
+            hf_bite_min_speed: hf_bite_min_speed,
+            hf_bite_max_speed: hf_bite_max_speed,
+            fluid_simulation_steps: fluid_simulation_steps,
+            leveler_target: leveler_target,
+            overrun_fuel_rate: overrun_fuel_rate,
+            overrun_throttle_threshold: overrun_throttle_threshold,
+            overrun_min_speed: overrun_min_speed,
+            overrun_duration: overrun_duration,
+            overrun_ignition_cut: overrun_ignition_cut,
             jitter: jitter,
             noise: noise
         );
@@ -551,6 +614,19 @@ public node exhaust_system_parameters {
     input primary_flow_rate: k_carb(100.0);
     input audio_volume: 1.0;
     input velocity_decay: 1.0;
+    // Backfire. Unburnt fuel that reaches a hot pipe with leftover oxygen
+    // ignites there; the heat release is a pressure spike, i.e. an actual pop
+    // rather than a sample. 0 = off, which is the default so no existing engine
+    // changes behaviour. backfire_temperature is the autoignition threshold.
+    input backfire_rate: 0.0;
+    // Kelvin (the gas system works in K). 900 K ~= 627 C, in the right region for
+    // gasoline autoignition in a hot exhaust.
+    input backfire_temperature: 900.0;
+    // Fuel mole fraction that must collect before it lights.
+    input backfire_fuel_threshold: 0.005;
+    // Seconds of enforced quiet after a pop. combust() runs every fluid substep
+    // (48000/s at 12kHz x 4), so without this it is a continuous flame.
+    input backfire_refractory: 0.05;
 }
 
 private node _exhaust_system => __engine_sim__exhaust_system {
@@ -561,6 +637,10 @@ private node _exhaust_system => __engine_sim__exhaust_system {
     input primary_flow_rate [float];
     input audio_volume [float];
     input velocity_decay [float];
+    input backfire_rate [float];
+    input backfire_temperature [float];
+    input backfire_fuel_threshold [float];
+    input backfire_refractory [float];
     input impulse_response [impulse_response];
     alias output __out [exhaust_system_channel];
 }
@@ -574,6 +654,10 @@ public node exhaust_system {
     input primary_flow_rate: parameters.primary_flow_rate;
     input audio_volume: parameters.audio_volume;
     input velocity_decay: parameters.velocity_decay;
+    input backfire_rate: parameters.backfire_rate;
+    input backfire_temperature: parameters.backfire_temperature;
+    input backfire_fuel_threshold: parameters.backfire_fuel_threshold;
+    input backfire_refractory: parameters.backfire_refractory;
     input impulse_response;
     alias output __out [_exhaust_system]:
         _exhaust_system(
@@ -584,6 +668,10 @@ public node exhaust_system {
             primary_flow_rate: primary_flow_rate,
             audio_volume: audio_volume,
             velocity_decay: velocity_decay,
+            backfire_rate: backfire_rate,
+            backfire_temperature: backfire_temperature,
+            backfire_fuel_threshold: backfire_fuel_threshold,
+            backfire_refractory: backfire_refractory,
             impulse_response: impulse_response
         );
 }
@@ -608,10 +696,42 @@ public node vehicle => __engine_sim__vehicle {
     input tire_radius [float]: 10 * units.inch;
     input rolling_resistance [float]: 2000;
 
+    // VRUM cooling model (a game model -- engine-sim simulates no coolant).
+    // Heat in = coolant_heat_fraction of the fuel's chemical energy; heat out
+    // = (radiator_idle + radiator_airflow * road speed) * (T - ambient) once
+    // the thermostat opens. Past overheat_temperature the ECU goes into limp.
+    input cooling [bool]: true;
+    input engine_thermal_mass [float]: 140000;
+    input coolant_heat_fraction [float]: 0.3;
+    input radiator_idle [float]: 2500;
+    input radiator_airflow [float]: 120;
+    input thermostat_temperature [float]: 90;
+    input overheat_temperature [float]: 118;
+    input ambient_temperature [float]: 30;
+
     alias output __out [vehicle_channel];
 }
 
 public node transmission => __engine_sim__transmission {
     input max_clutch_torque [float]: 1000 * units.lb_ft;
+
+    // Transmission control unit. Refuses a downshift that would spin the engine
+    // past `rev_limit - tcu_over_rev_margin`, computed from the ratio step
+    // before the shift is committed. Set `tcu: false` for a car that predates
+    // one and should be allowed to money-shift.
+    input tcu [bool]: true;
+    input tcu_over_rev_margin [float]: 200 * units.rpm;
+
+    // Seconds for a whole shift (clutch open, ratio swap, clutch closed).
+    // Paddle presses inside this window are refused.
+    input shift_time [float]: 0.12 * units.sec;
+    // Lamborghini ISR-style spark cut on upshifts (the "crack").
+    input upshift_cut [bool]: false;
+    // Launch control: brake + full throttle in 1st holds launch_rpm, releasing
+    // the brake drops the clutch over launch_clutch_time.
+    input launch_control [bool]: false;
+    input launch_rpm [float]: 4000 * units.rpm;
+    input launch_clutch_time [float]: 0.35 * units.sec;
+
     alias output __out [transmission_channel];
 }

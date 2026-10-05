@@ -12,6 +12,17 @@ class Vehicle {
             double diffRatio;
             double tireRadius;
             double rollingResistance;
+
+            // VRUM cooling model; see es/objects/objects.mr (vehicle node).
+            // Temperatures in degrees C, energies in J, conductances in W/K.
+            bool cooling = true;
+            double engineThermalMass = 140000;
+            double coolantHeatFraction = 0.3;
+            double radiatorIdle = 2500;
+            double radiatorAirflow = 120;
+            double thermostatTemperature = 90;
+            double overheatTemperature = 118;
+            double ambientTemperature = 30;
         };
 
     public:
@@ -31,6 +42,7 @@ class Vehicle {
         inline double getTravelledDistance() const { return m_travelledDistance; }
         inline void resetTravelledDistance() { m_travelledDistance = 0; }
         double linearForceToVirtualTorque(double force) const;
+        const Parameters &getParameters() const { return m_params; }
 
     protected:
         atg_scs::RigidBody *m_rotatingMass;
@@ -42,6 +54,7 @@ class Vehicle {
         double m_tireRadius;
         double m_travelledDistance;
         double m_rollingResistance;
+        Parameters m_params;
 };
 
 #endif /* ATG_ENGINE_SIM_VEHICLE_H */

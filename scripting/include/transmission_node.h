@@ -29,6 +29,13 @@ namespace es_script {
     protected:
         virtual void registerInputs() {
             addInput("max_clutch_torque", &m_parameters.MaxClutchTorque);
+            addInput("tcu", &m_parameters.TcuEnabled);
+            addInput("tcu_over_rev_margin", &m_parameters.TcuOverRevMargin);
+            addInput("shift_time", &m_parameters.ShiftTime);
+            addInput("upshift_cut", &m_parameters.UpshiftCut);
+            addInput("launch_control", &m_parameters.LaunchControl);
+            addInput("launch_rpm", &m_parameters.LaunchRpm);
+            addInput("launch_clutch_time", &m_parameters.LaunchClutchTime);
 
             ObjectReferenceNode<TransmissionNode>::registerInputs();
         }

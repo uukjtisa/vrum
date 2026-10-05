@@ -8,15 +8,62 @@
 #include "../include/cylinder_bank_object.h"
 #include "../include/cylinder_head_object.h"
 #include "../include/ui_button.h"
+#include "../include/control_bar.h"
 #include "../include/combustion_chamber_object.h"
 #include "../include/csv_io.h"
 #include "../include/exhaust_system.h"
 #include "../include/feedback_comb_filter.h"
+#include "../include/piston_engine_simulator.h"
 #include "../include/utilities.h"
 
 #include "../scripting/include/compiler.h"
 
+namespace {
+
+// The presets. These are starting points, not a fixed menu -- the ACOUSTICS
+// sliders edit the same numbers afterwards.
+//
+// OUTDOOR and TUNNEL are not the same room at two sizes, which is why a single
+// "reverb amount" knob could not express both: open ground damps hard (grass
+// and air eat the top end, nothing is close enough to slap back), concrete
+// barely damps at all and puts distinct echoes off walls a few metres away. The
+// damping term has to move in OPPOSITE directions between them.
+// Measured, not guessed: each was rendered against a dry reference and the
+// difference signal's RMS compared to the dry RMS, which is the only number
+// that says whether the effect is actually audible. The first OUTDOOR attempt
+// measured -15.0 dB (wet at 18% of dry) and the owner correctly reported it as
+// "sounds the same as normal". These land at -3.9 dB and +5.6 dB.
+//
+// Beware: the response is strongly nonlinear in DAMPING. Moving damping
+// 0.45 -> 0.35 (with a small room-size bump) moved the wet contribution from
+// -14.0 dB to -3.9 dB. Re-measure after any change; do not interpolate.
+const EngineSimApplication::Acoustics AcousticsPresets[] = {
+    // mix   room  damping  early  airCutoff       measured wet vs dry
+    {  0.00, 0.40, 0.50,    0.00,     0.0 },  // CLOSE   -- raw exhaust
+    {  0.55, 0.55, 0.35,    0.45,  8000.0 },  // OUTDOOR -- -3.9 dB
+    {  0.58, 0.84, 0.16,    0.72, 12500.0 },  // TUNNEL  -- +5.6 dB
+};
+
+bool sameAcoustics(
+    const EngineSimApplication::Acoustics &a,
+    const EngineSimApplication::Acoustics &b)
+{
+    const double eps = 1e-6;
+    return std::abs(a.mix - b.mix) < eps
+        && std::abs(a.roomSize - b.roomSize) < eps
+        && std::abs(a.damping - b.damping) < eps
+        && std::abs(a.early - b.early) < eps
+        && std::abs(a.airCutoff - b.airCutoff) < eps;
+}
+
+} // namespace
+
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <stdlib.h>
 #include <sstream>
 
@@ -39,28 +86,30 @@ EngineSimApplication::EngineSimApplication() {
         m_screenResolution[i][0] = m_screenResolution[i][1] = 0;
     }
 
-    m_background = ysColor::srgbiToLinear(0x0E1012);
-    m_foreground = ysColor::srgbiToLinear(0xFFFFFF);
-    m_shadow = ysColor::srgbiToLinear(0x0E1012);
-    m_highlight1 = ysColor::srgbiToLinear(0xEF4545);
-    m_highlight2 = ysColor::srgbiToLinear(0xFFFFFF);
-    m_pink = ysColor::srgbiToLinear(0xF394BE);
-    m_red = ysColor::srgbiToLinear(0xEE4445);
-    m_orange = ysColor::srgbiToLinear(0xF4802A);
-    m_yellow = ysColor::srgbiToLinear(0xFDBD2E);
-    m_blue = ysColor::srgbiToLinear(0x77CEE0);
-    m_green = ysColor::srgbiToLinear(0xBDD869);
+    // Fallbacks used before assets/themes/default.mr is applied; keep them in
+    // step with it so the first frames are not a different colour scheme.
+    m_background = ysColor::srgbiToLinear(0x0B0D10);
+    m_foreground = ysColor::srgbiToLinear(0xE8ECF2);
+    m_shadow = ysColor::srgbiToLinear(0x05070A);
+    m_highlight1 = ysColor::srgbiToLinear(0xFF5A4E);
+    m_highlight2 = ysColor::srgbiToLinear(0xE8ECF2);
+    m_pink = ysColor::srgbiToLinear(0xF48FB1);
+    m_red = ysColor::srgbiToLinear(0xFF5A4E);
+    m_orange = ysColor::srgbiToLinear(0xFFA24B);
+    m_yellow = ysColor::srgbiToLinear(0xFFD24A);
+    m_blue = ysColor::srgbiToLinear(0x63D2E8);
+    m_green = ysColor::srgbiToLinear(0x9FE05B);
 
     m_displayHeight = (float)units::distance(2.0, units::foot);
     m_outputAudioBuffer = nullptr;
     m_audioSource = nullptr;
 
     m_torque = 0;
-    m_dynoSpeed = 0;
 
     m_simulator = nullptr;
     m_engineView = nullptr;
     m_rightGaugeCluster = nullptr;
+    m_heroCluster = nullptr;
     m_temperatureGauge = nullptr;
     m_oscCluster = nullptr;
     m_performanceCluster = nullptr;
@@ -105,21 +154,25 @@ void EngineSimApplication::initialize(void *instance, ysContextObject::DeviceAPI
         confFile.close();
     }
 
+    m_enginePath = enginePath;
     m_engine.GetConsole()->SetDefaultFontDirectory(enginePath + "/fonts/");
 
     const std::string shaderPath = enginePath + "/shaders/";
-    const std::string winTitle = "Engine Sim | AngeTheGreat | v" + s_buildVersion;
+    const std::string winTitle = "VRUM | Niccc2007 | v" + s_buildVersion;
     dbasic::DeltaEngine::GameEngineSettings settings;
     settings.API = api;
     settings.DepthBuffer = false;
     settings.Instance = instance;
     settings.ShaderDirectory = shaderPath.c_str();
     settings.WindowTitle = winTitle.c_str();
-    settings.WindowPositionX = 0;
-    settings.WindowPositionY = 0;
     settings.WindowStyle = ysWindow::WindowStyle::Windowed;
-    settings.WindowWidth = 1920;
-    settings.WindowHeight = 1080;
+    // Leave room for the title bar and the taskbar. At a full 1920x1080 from
+    // (0,0) the client area runs off the bottom of the screen and the control
+    // bar along its lower edge is never visible.
+    settings.WindowWidth = 1600;
+    settings.WindowHeight = 900;
+    settings.WindowPositionX = 60;
+    settings.WindowPositionY = 40;
 
     m_engine.CreateGameWindow(settings);
 
@@ -141,7 +194,7 @@ void EngineSimApplication::initialize(void *instance, ysContextObject::DeviceAPI
     m_engine.InitializeConsoleShaders(&m_shaderSet);
     m_engine.SetShaderSet(&m_shaderSet);
 
-    m_shaders.SetClearColor(ysColor::srgbiToLinear(0x34, 0x98, 0xdb));
+    m_shaders.SetClearColor(ysColor::srgbiToLinear(0x05, 0x07, 0x0A));
 
     m_assetManager.SetEngine(&m_engine);
 
@@ -156,14 +209,40 @@ void EngineSimApplication::initialize(void *instance, ysContextObject::DeviceAPI
 }
 
 void EngineSimApplication::initialize() {
-    m_shaders.SetClearColor(ysColor::srgbiToLinear(0x34, 0x98, 0xdb));
+    m_shaders.SetClearColor(ysColor::srgbiToLinear(0x05, 0x07, 0x0A));
     m_assetManager.CompileInterchangeFile((m_assetPath + "/assets").c_str(), 1.0f, true);
     m_assetManager.LoadSceneFile((m_assetPath + "/assets").c_str(), true);
 
     m_textRenderer.SetEngine(&m_engine);
     m_textRenderer.SetRenderer(m_engine.GetUiRenderer());
+
+    // VRUM: Chakra Petch (SIL OFL, assets/fonts) instead of the console's
+    // Silkscreen bitmap face.
+    //
+    // An earlier attempt rendered every label as fragments of the wrong glyphs,
+    // and the cause was not LoadFont: delta-studio's UiRenderer batches EVERY
+    // text quad -- the console's and ours -- into one draw call bound to ONE
+    // font texture (UiRenderer::UpdateDisplay), so two fonts meant half the
+    // glyphs sampled the other atlas. The fix is to give the console the same
+    // font, so there is only ever one atlas. Falls back to Silkscreen if the
+    // file is missing.
+    {
+        dbasic::Font *uiFont = nullptr;
+        const std::string fontPath = m_assetPath + "/fonts/ChakraPetch-SemiBold.ttf";
+        if (m_engine.LoadFont(&uiFont, fontPath.c_str(), 2048, 64) == ysError::None
+            && uiFont != nullptr)
+        {
+            m_engine.GetConsole()->SetFont(uiFont);
+        }
+    }
     m_textRenderer.SetFont(m_engine.GetConsole()->GetFont());
 
+    // Both of these are CWD-independent: m_assetPath has already been resolved
+    // against the module directory (via delta.conf) or the default. Without
+    // this the app could only be started with build/ as the working directory.
+    m_scriptPath = m_assetPath + "/main.mr";
+
+    scanEngineFiles();
     loadScript();
 
     m_audioBuffer.initialize(44100, 44100);
@@ -177,9 +256,10 @@ void EngineSimApplication::initialize() {
         m_engine.GetAudioDevice()->CreateBuffer(&params, 44100);
 
     m_audioSource = m_engine.GetAudioDevice()->CreateSource(m_outputAudioBuffer);
-    m_audioSource->SetMode((m_simulator->getEngine() != nullptr)
-        ? ysAudioSource::Mode::Loop
-        : ysAudioSource::Mode::Stop);
+    m_audioSource->SetMode(
+        (m_simulator != nullptr && m_simulator->getEngine() != nullptr)
+            ? ysAudioSource::Mode::Loop
+            : ysAudioSource::Mode::Stop);
     m_audioSource->SetPan(0.0f);
     m_audioSource->SetVolume(1.0f);
 
@@ -284,6 +364,16 @@ void EngineSimApplication::process(float frame_dt) {
         m_audioBuffer.writeSample(sample, m_audioBuffer.m_writePointer, (int)i);
 
         m_oscillatorSampleOffset = (m_oscillatorSampleOffset + 1) % (44100 / 10);
+    }
+
+    // VRUM: capture exactly the samples that reached the speakers -- post
+    // convolution, post leveler -- so what we measure is what we heard.
+    if (m_audioCapture.isOpen()) {
+        // NB: std::min is unusable here -- windows.h defines min/max as macros.
+        const int capturedSamples = (readSamples < (int)maxWrite)
+            ? readSamples
+            : (int)maxWrite;
+        m_audioCapture.write(samples, capturedSamples);
     }
 
     delete[] samples;
@@ -399,11 +489,37 @@ void EngineSimApplication::run() {
             stopRecording();
         }
 
+        if (m_engine.ProcessKeyDown(ysKey::Code::P) &&
+            m_engine.GetGameWindow()->IsActive()) {
+            toggleAudioCapture();
+        }
+
+        // [O] master switch for backfires -- silences them without editing the
+        // .mr, including any fuel already sitting in a hot pipe.
+        if (m_engine.ProcessKeyDown(ysKey::Code::O)) toggleBackfire();
+        if (m_engine.ProcessKeyDown(ysKey::Code::J)) toggleRevMatch();
+
+        // [.] close-mic vs outdoors. Deliberately NOT [I]: I+scroll sets the
+        // listener distance, and a key that both toggles on tap and scrolls on
+        // hold fires the toggle every time you start a scroll gesture.
+        if (m_engine.ProcessKeyDown(ysKey::Code::OEM_Period)) togglePerspective();
+
+        if (m_engine.ProcessKeyDown(ysKey::Code::PageDown)) cycleEngine(1);
+        if (m_engine.ProcessKeyDown(ysKey::Code::PageUp)) cycleEngine(-1);
+
         if (!m_paused || m_engine.ProcessKeyDown(ysKey::Code::Right)) {
             process(m_engine.GetFrameLength());
         }
 
         m_uiManager.update(m_engine.GetFrameLength());
+
+        // Safe point for anything that rebuilds the UI tree: the update walk
+        // has unwound, so no destroyed element is still on the stack.
+        if (m_pendingEngineCycle != 0) {
+            const int delta = m_pendingEngineCycle;
+            m_pendingEngineCycle = 0;
+            cycleEngine(delta);
+        }
 
         renderScene();
 
@@ -417,6 +533,10 @@ void EngineSimApplication::run() {
     if (isRecording()) {
         stopRecording();
     }
+
+    // Patches the WAV header; without this a capture left running at exit would
+    // be a file with zeroed sizes that no analyser will open.
+    m_audioCapture.close();
 
     m_simulator->endAudioRenderingThread();
 }
@@ -440,6 +560,9 @@ void EngineSimApplication::loadEngine(
     Transmission *transmission)
 {
     destroyObjects();
+
+    // Detach before the simulator it points at is destroyed.
+    m_drive.attach(nullptr);
 
     if (m_simulator != nullptr) {
         m_simulator->releaseSimulation();
@@ -465,14 +588,20 @@ void EngineSimApplication::loadEngine(
     m_vehicle = vehicle;
     m_transmission = transmission;
 
-    m_simulator = engine->createSimulator(vehicle, transmission);
-
+    // Check BEFORE dereferencing. This used to call engine->createSimulator()
+    // first and null-check afterwards, which crashed outright whenever a script
+    // failed to compile -- previously rare with one hard-coded engine, now
+    // routine with runtime engine switching.
     if (engine == nullptr || vehicle == nullptr || transmission == nullptr) {
         m_iceEngine = nullptr;
+        m_simulator = nullptr;
         m_viewParameters.Layer1 = 0;
 
         return;
     }
+
+    m_simulator = engine->createSimulator(vehicle, transmission);
+    m_drive.attach(m_simulator);
 
     createObjects(engine);
 
@@ -485,6 +614,9 @@ void EngineSimApplication::loadEngine(
     audioParams.inputSampleNoise = static_cast<float>(engine->getInitialJitter());
     audioParams.airNoise = static_cast<float>(engine->getInitialNoise());
     audioParams.dF_F_mix = static_cast<float>(engine->getInitialHighFrequencyGain());
+    audioParams.inputFilterCutoff = static_cast<float>(engine->getInitialHighFrequencyCutoff());
+    audioParams.hfBiteCutoff = static_cast<float>(engine->getInitialHighFrequencyBiteCutoff());
+    audioParams.levelerTarget = static_cast<float>(engine->getLevelerTarget());
     m_simulator->synthesizer().setAudioParameters(audioParams);
 
     for (int i = 0; i < engine->getExhaustSystemCount(); ++i) {
@@ -615,7 +747,7 @@ const SimulationObject::ViewParameters &
     return m_viewParameters;
 }
 
-void EngineSimApplication::loadScript() {
+bool EngineSimApplication::loadScript() {
     Engine *engine = nullptr;
     Vehicle *vehicle = nullptr;
     Transmission *transmission = nullptr;
@@ -623,7 +755,14 @@ void EngineSimApplication::loadScript() {
 #ifdef ATG_ENGINE_SIM_PIRANHA_ENABLED
     es_script::Compiler compiler;
     compiler.initialize();
-    const bool compiled = compiler.compile("../assets/main.mr");
+    // Anchor imports on the repo layout rather than the working directory, so
+    // VRUM.exe at the project root is double-clickable from anywhere.
+    const std::filesystem::path repoRoot =
+        std::filesystem::path(m_assetPath).parent_path();
+    compiler.addSearchPath((repoRoot / "es").string() + "/");
+    compiler.addSearchPath(m_assetPath + "/");
+
+    const bool compiled = compiler.compile(m_scriptPath.c_str());
     if (compiled) {
         const es_script::Compiler::Output output = compiler.execute();
         configure(output.applicationSettings);
@@ -640,6 +779,14 @@ void EngineSimApplication::loadScript() {
 
     compiler.destroy();
 #endif /* ATG_ENGINE_SIM_PIRANHA_ENABLED */
+
+    // A script that fails to compile yields no engine. Tearing down the running
+    // one in that case would leave m_simulator null, which process() dereferences
+    // every frame -- so keep what is already loaded and just report it.
+    if (engine == nullptr && m_iceEngine != nullptr) {
+        m_infoCluster->setLogMessage("Script failed to compile: " + m_scriptPath);
+        return false;
+    }
 
     if (vehicle == nullptr) {
         Vehicle::Parameters vehParams;
@@ -665,6 +812,8 @@ void EngineSimApplication::loadScript() {
 
     loadEngine(engine, vehicle, transmission);
     refreshUserInterface();
+
+    return engine != nullptr;
 }
 
 void EngineSimApplication::processEngineInput() {
@@ -745,6 +894,54 @@ void EngineSimApplication::processEngineInput() {
 
         m_infoCluster->setLogMessage("[B] - Set high freq. noise to " + std::to_string(audioParams.inputSampleNoise));
     }
+    else if (m_engine.IsKeyDown(ysKey::Code::K)) {
+        const double rate = fineControlMode
+            ? 10.0
+            : 100.0;
+
+        Synthesizer &synth = m_simulator->synthesizer();
+        Synthesizer::AudioParameters audioParams = synth.getAudioParameters();
+
+        // Seed from whatever is currently in effect so scrolling off "auto" (0)
+        // doesn't jump the cutoff to some unrelated value.
+        const double current = (audioParams.inputFilterCutoff > 0.0f)
+            ? audioParams.inputFilterCutoff
+            : synth.effectiveInputFilterCutoff();
+
+        audioParams.inputFilterCutoff = static_cast<float>(
+            clamp(current + mouseWheelDelta * rate * dt, 100.0, 20000.0));
+        synth.setAudioParameters(audioParams);
+        fineControlInUse = true;
+
+        // The effective value is capped at 0.45 * simulation frequency, so show
+        // both -- if they diverge, the sim rate is the limit, not this knob.
+        const int requested = (int)std::round(audioParams.inputFilterCutoff);
+        const int effective = (int)std::round(synth.effectiveInputFilterCutoff());
+        m_infoCluster->setLogMessage(
+            "[K] - Set HF cutoff to " + std::to_string(requested) + " hz"
+            + ((effective < requested)
+                ? " (capped at " + std::to_string(effective) + " hz by sim freq)"
+                : ""));
+    }
+    else if (m_engine.IsKeyDown(ysKey::Code::L)) {
+        PistonEngineSimulator *pistonSim =
+            dynamic_cast<PistonEngineSimulator *>(m_simulator);
+        if (pistonSim != nullptr && mouseWheelDelta != 0) {
+            const int steps = (int)clamp(
+                (double)pistonSim->getFluidSimulationSteps()
+                    + ((mouseWheelDelta > 0) ? 1 : -1),
+                1.0, 16.0);
+            pistonSim->setFluidSimulationSteps(steps);
+
+            m_infoCluster->setLogMessage(
+                "[L] - Set fluid sim steps to " + std::to_string(steps)
+                + " (" + std::to_string(
+                    (int)std::round(m_simulator->getSimulationFrequency()) * steps)
+                + " hz internal)");
+        }
+
+        fineControlInUse = true;
+    }
     else if (m_engine.IsKeyDown(ysKey::Code::N)) {
         const double rate = fineControlMode
             ? 10.0
@@ -761,15 +958,15 @@ void EngineSimApplication::processEngineInput() {
     }
     else if (m_engine.IsKeyDown(ysKey::Code::G) && m_simulator->m_dyno.m_hold) {
         if (mouseWheelDelta > 0) {
-            m_dynoSpeed += m_iceEngine->getDynoHoldStep();
+            m_drive.dynoSpeed += m_iceEngine->getDynoHoldStep();
         }
         else if (mouseWheelDelta < 0) {
-            m_dynoSpeed -= m_iceEngine->getDynoHoldStep();
+            m_drive.dynoSpeed -= m_iceEngine->getDynoHoldStep();
         }
 
-        m_dynoSpeed = clamp(m_dynoSpeed, m_iceEngine->getDynoMinSpeed(), m_iceEngine->getDynoMaxSpeed());
+        m_drive.dynoSpeed = clamp(m_drive.dynoSpeed, m_iceEngine->getDynoMinSpeed(), m_iceEngine->getDynoMaxSpeed());
 
-        m_infoCluster->setLogMessage("[G] - Set dyno speed to " + std::to_string(units::toRpm(m_dynoSpeed)));
+        m_infoCluster->setLogMessage("[G] - Set dyno speed to " + std::to_string(units::toRpm(m_drive.dynoSpeed)));
         fineControlInUse = true;
     }
 
@@ -795,9 +992,17 @@ void EngineSimApplication::processEngineInput() {
         m_infoCluster->setLogMessage("Speed control set to " + std::to_string(m_targetSpeedSetting));
     }
 
-    m_speedSetting = m_targetSpeedSetting * 0.5 + 0.5 * m_speedSetting;
+    // The ACOUSTICS sliders write m_acoustics in place, so poll rather than
+    // being notified. Comparing first keeps this to a few doubles per frame
+    // instead of taking the synthesizer's parameter lock every frame.
+    if (!sameAcoustics(m_acoustics, m_appliedAcoustics)) {
+        applyPerspective();
+    }
 
-    m_iceEngine->setSpeedControl(m_speedSetting);
+    // Throttle, rev-match, launch control, Shift Assist, the cooling model and
+    // the dyno sweep all run in the shared DriveController (core library), so
+    // the Android build behaves identically. This only feeds it inputs.
+    m_drive.setThrottleInput(m_targetSpeedSetting);
     if (m_engine.ProcessKeyDown(ysKey::Code::M)) {
         const int currentLayer = getViewParameters().Layer0;
         if (currentLayer + 1 < m_iceEngine->getMaxDepth()) {
@@ -814,14 +1019,7 @@ void EngineSimApplication::processEngineInput() {
         m_infoCluster->setLogMessage("[,] - Set render layer to " + std::to_string(getViewParameters().Layer0));
     }
 
-    if (m_engine.ProcessKeyDown(ysKey::Code::D)) {
-        m_simulator->m_dyno.m_enabled = !m_simulator->m_dyno.m_enabled;
-
-        const std::string msg = m_simulator->m_dyno.m_enabled
-            ? "DYNOMOMETER ENABLED"
-            : "DYNOMOMETER DISABLED";
-        m_infoCluster->setLogMessage(msg);
-    }
+    if (m_engine.ProcessKeyDown(ysKey::Code::D)) toggleDyno();
 
     if (m_engine.ProcessKeyDown(ysKey::Code::H)) {
         m_simulator->m_dyno.m_hold = !m_simulator->m_dyno.m_hold;
@@ -832,29 +1030,6 @@ void EngineSimApplication::processEngineInput() {
         m_infoCluster->setLogMessage(msg);
     }
 
-    if (m_simulator->m_dyno.m_enabled) {
-        if (!m_simulator->m_dyno.m_hold) {
-            if (m_simulator->getFilteredDynoTorque() > units::torque(1.0, units::ft_lb)) {
-                m_dynoSpeed += units::rpm(500) * dt;
-            }
-            else {
-                m_dynoSpeed *= (1 / (1 + dt));
-            }
-
-            if (m_dynoSpeed > m_iceEngine->getRedline()) {
-                m_simulator->m_dyno.m_enabled = false;
-                m_dynoSpeed = units::rpm(0);
-            }
-        }
-    }
-    else {
-        if (!m_simulator->m_dyno.m_hold) {
-            m_dynoSpeed = units::rpm(0);
-        }
-    }
-
-    m_dynoSpeed = clamp(m_dynoSpeed, m_iceEngine->getDynoMinSpeed(), m_iceEngine->getDynoMaxSpeed());
-    m_simulator->m_dyno.m_rotationSpeed = m_dynoSpeed;
 
     const bool prevStarterEnabled = m_simulator->m_starterMotor.m_enabled;
     if (m_engine.IsKeyDown(ysKey::Code::S)) {
@@ -871,58 +1046,40 @@ void EngineSimApplication::processEngineInput() {
         m_infoCluster->setLogMessage(msg);
     }
 
-    if (m_engine.ProcessKeyDown(ysKey::Code::A)) {
-        m_simulator->getEngine()->getIgnitionModule()->m_enabled =
-            !m_simulator->getEngine()->getIgnitionModule()->m_enabled;
-
-        const std::string msg = m_simulator->getEngine()->getIgnitionModule()->m_enabled
-            ? "IGNITION ENABLED"
-            : "IGNITION DISABLED";
-        m_infoCluster->setLogMessage(msg);
-    }
+    if (m_engine.ProcessKeyDown(ysKey::Code::A)) toggleIgnition();
+    if (m_engine.ProcessKeyDown(ysKey::Code::F5)) toggleLaunchControl();
+    if (m_engine.ProcessKeyDown(ysKey::Code::F6)) toggleAssist();
 
     if (m_engine.ProcessKeyDown(ysKey::Code::Up)) {
-        m_simulator->getTransmission()->changeGear(m_simulator->getTransmission()->getGear() + 1);
-
-        m_infoCluster->setLogMessage(
-            "UPSHIFTED TO " + std::to_string(m_simulator->getTransmission()->getGear() + 1));
+        shiftGear(1);
     }
     else if (m_engine.ProcessKeyDown(ysKey::Code::Down)) {
-        m_simulator->getTransmission()->changeGear(m_simulator->getTransmission()->getGear() - 1);
-
-        if (m_simulator->getTransmission()->getGear() != -1) {
-            m_infoCluster->setLogMessage(
-                "DOWNSHIFTED TO " + std::to_string(m_simulator->getTransmission()->getGear() + 1));
-        }
-        else {
-            m_infoCluster->setLogMessage("SHIFTED TO NEUTRAL");
-        }
+        shiftGear(-1);
     }
 
-    if (m_engine.IsKeyDown(ysKey::Code::T)) {
-        m_targetClutchPressure -= 0.2 * dt;
-    }
-    else if (m_engine.IsKeyDown(ysKey::Code::U)) {
-        m_targetClutchPressure += 0.2 * dt;
-    }
-    else if (m_engine.IsKeyDown(ysKey::Code::Shift)) {
-        m_targetClutchPressure = 0.0;
-        m_infoCluster->setLogMessage("CLUTCH DEPRESSED");
-    }
-    else if (!m_engine.IsKeyDown(ysKey::Code::Y)) {
-        m_targetClutchPressure = 1.0;
-    }
+    // Wheel brake. Held, not toggled -- it is a pedal. The control bar's BRAKE
+    // button drives the same value through m_brakeInput. Same travel-time
+    // treatment as the throttle, so it can be squeezed rather than stamped.
+    const bool brakeKey = m_engine.IsKeyDown(ysKey::Code::B);
+    const double brakeTarget = (brakeKey || m_brakeInput) ? 1.0 : 0.0;
+    m_drive.setBrakeInput(brakeTarget);
 
-    m_targetClutchPressure = clamp(m_targetClutchPressure);
+    // Manual clutch: T/U ease it out/in, Shift floors it, Y holds it where it
+    // is. With none held the drive controller owns the clutch (shift sequence,
+    // rev-match, launch control).
+    const bool clutchT = m_engine.IsKeyDown(ysKey::Code::T);
+    const bool clutchU = m_engine.IsKeyDown(ysKey::Code::U);
+    const bool clutchShift = m_engine.IsKeyDown(ysKey::Code::Shift);
+    const bool clutchY = m_engine.IsKeyDown(ysKey::Code::Y);
+    if (clutchT) m_manualClutchLevel -= 0.2 * dt;
+    else if (clutchU) m_manualClutchLevel += 0.2 * dt;
+    else if (clutchShift) m_manualClutchLevel = 0.0;
+    else if (!clutchY) m_manualClutchLevel = 1.0;
+    m_manualClutchLevel = clamp(m_manualClutchLevel);
+    m_drive.setManualClutch(clutchT || clutchU || clutchShift || clutchY, m_manualClutchLevel);
 
-    double clutchRC = 0.001;
-    if (m_engine.IsKeyDown(ysKey::Code::Space)) {
-        clutchRC = 1.0;
-    }
-
-    const double clutch_s = dt / (dt + clutchRC);
-    m_clutchPressure = m_clutchPressure * (1 - clutch_s) + m_targetClutchPressure * clutch_s;
-    m_simulator->getTransmission()->setClutchPressure(m_clutchPressure);
+    m_drive.update(dt);
+    drainDriveEvents();
 }
 
 void EngineSimApplication::renderScene() {
@@ -941,8 +1098,24 @@ void EngineSimApplication::renderScene() {
 
     m_shaders.CalculateUiCamera(screenWidth, screenHeight);
 
+    // Reserve a strip along the bottom for the control bar, and lay the rest of
+    // the interface out inside what is left, so the bar never covers a gauge.
+    // Four rows: buttons, drive-electronics buttons, ACOUSTICS sliders, pedal
+    // sliders.
+    const float controlBarHeight = 190.0f;
+    const Bounds fullWindow(
+        (float)screenWidth, (float)screenHeight, { 0, (float)screenHeight });
+    m_controlBar->m_bounds =
+        Bounds(fullWindow.left(), fullWindow.right(),
+               fullWindow.bottom(), fullWindow.bottom() + controlBarHeight)
+        .inset(8.0f);
+    m_controlBar->setVisible(true);
+
+    const float usableHeight = (float)screenHeight - controlBarHeight;
+
     if (m_screen == 0) {
-        Bounds windowBounds((float)screenWidth, (float)screenHeight, { 0, (float)screenHeight });
+        Bounds windowBounds(
+            (float)screenWidth, usableHeight, { 0, (float)screenHeight });
         Grid grid;
         grid.v_cells = 2;
         grid.h_cells = 3;
@@ -953,7 +1126,11 @@ void EngineSimApplication::renderScene() {
         m_engineView->setBounds(grid.get(windowBounds, 1, 0, 1, 1));
         m_engineView->setLocalPosition({ 0, 0 });
 
-        m_rightGaugeCluster->m_bounds = grid.get(windowBounds, 2, 0, 1, 2);
+        // Right column: the driver's hero panel on top, the engine gauges below.
+        const Bounds rightColumn = grid.get(windowBounds, 2, 0, 1, 2);
+        m_heroCluster->m_bounds = rightColumn.verticalSplit(0.66f, 1.0f);
+        m_rightGaugeCluster->m_bounds = rightColumn.verticalSplit(0.0f, 0.66f);
+        m_heroCluster->setVisible(true);
         m_oscCluster->m_bounds = grid.get(windowBounds, 1, 1);
         m_performanceCluster->m_bounds = grid3x3.get(windowBounds, 0, 1);
         m_loadSimulationCluster->m_bounds = grid3x3.get(windowBounds, 0, 2);
@@ -975,7 +1152,8 @@ void EngineSimApplication::renderScene() {
         m_oscCluster->activate();
     }
     else if (m_screen == 1) {
-        Bounds windowBounds((float)screenWidth, (float)screenHeight, { 0, (float)screenHeight });
+        Bounds windowBounds(
+            (float)screenWidth, usableHeight, { 0, (float)screenHeight });
         m_engineView->setDrawFrame(false);
         m_engineView->setBounds(windowBounds);
         m_engineView->setLocalPosition({ 0, 0 });
@@ -983,6 +1161,7 @@ void EngineSimApplication::renderScene() {
 
         m_engineView->setVisible(true);
         m_rightGaugeCluster->setVisible(false);
+        m_heroCluster->setVisible(false);
         m_oscCluster->setVisible(false);
         m_performanceCluster->setVisible(false);
         m_loadSimulationCluster->setVisible(false);
@@ -990,7 +1169,8 @@ void EngineSimApplication::renderScene() {
         m_infoCluster->setVisible(false);
     }
     else if (m_screen == 2) {
-        Bounds windowBounds((float)screenWidth, (float)screenHeight, { 0, (float)screenHeight });
+        Bounds windowBounds(
+            (float)screenWidth, usableHeight, { 0, (float)screenHeight });
         Grid grid;
         grid.v_cells = 1;
         grid.h_cells = 3;
@@ -999,7 +1179,10 @@ void EngineSimApplication::renderScene() {
         m_engineView->setLocalPosition({ 0, 0 });
         m_engineView->activate();
 
-        m_rightGaugeCluster->m_bounds = grid.get(windowBounds, 2, 0, 1, 1);
+        const Bounds rightColumn = grid.get(windowBounds, 2, 0, 1, 1);
+        m_heroCluster->m_bounds = rightColumn.verticalSplit(0.62f, 1.0f);
+        m_rightGaugeCluster->m_bounds = rightColumn.verticalSplit(0.0f, 0.62f);
+        m_heroCluster->setVisible(true);
 
         m_engineView->setVisible(true);
         m_rightGaugeCluster->setVisible(true);
@@ -1049,6 +1232,169 @@ void EngineSimApplication::renderScene() {
         0);
 }
 
+// VRUM: shared actions. The keyboard handler and the on-screen control bar
+// both route through these, so a button and its shortcut cannot drift apart
+// and the button can also read back the simulator's real state.
+
+void EngineSimApplication::toggleIgnition() {
+    if (m_simulator == nullptr || m_simulator->getEngine() == nullptr) return;
+
+    IgnitionModule *ignition = m_simulator->getEngine()->getIgnitionModule();
+    ignition->m_enabled = !ignition->m_enabled;
+    m_infoCluster->setLogMessage(
+        ignition->m_enabled ? "IGNITION ENABLED" : "IGNITION DISABLED");
+}
+
+void EngineSimApplication::toggleDyno() {
+    if (m_simulator == nullptr) return;
+
+    m_simulator->m_dyno.m_enabled = !m_simulator->m_dyno.m_enabled;
+    m_infoCluster->setLogMessage(
+        m_simulator->m_dyno.m_enabled
+            ? "DYNOMOMETER ENABLED"
+            : "DYNOMOMETER DISABLED");
+}
+
+void EngineSimApplication::toggleBackfire() {
+    if (m_iceEngine == nullptr) return;
+
+    const bool on = !m_iceEngine->getBackfireEnabled();
+    m_iceEngine->setBackfireEnabled(on);
+    m_infoCluster->setLogMessage(
+        on ? "[O] - Backfires ENABLED" : "[O] - Backfires DISABLED");
+}
+
+
+const char *EngineSimApplication::getPerspectiveName() const {
+    const int i = static_cast<int>(m_perspective);
+    if (!sameAcoustics(m_acoustics, AcousticsPresets[i])) return "CUSTOM";
+
+    switch (m_perspective) {
+    case Perspective::Outdoor: return "OUTDOOR";
+    case Perspective::Tunnel:  return "TUNNEL";
+    default:                   return "CLOSE";
+    }
+}
+
+void EngineSimApplication::applyPreset(Perspective p) {
+    m_perspective = p;
+    m_acoustics = AcousticsPresets[static_cast<int>(p)];
+    applyPerspective();
+}
+
+void EngineSimApplication::togglePerspective() {
+    applyPreset(static_cast<Perspective>(
+        (static_cast<int>(m_perspective) + 1)
+        % static_cast<int>(Perspective::Count)));
+
+    m_infoCluster->setLogMessage(
+        std::string("[.] - Acoustics ") + getPerspectiveName());
+}
+
+// Pushes the live acoustics values into the synthesizer. Called whenever they
+// change -- by a preset, or by a slider being dragged.
+void EngineSimApplication::applyPerspective() {
+    if (m_simulator == nullptr) return;
+
+    Synthesizer::AudioParameters params =
+        m_simulator->synthesizer().getAudioParameters();
+
+    params.reverbMix = static_cast<float>(clamp(m_acoustics.mix));
+    params.reverbRoomSize = static_cast<float>(clamp(m_acoustics.roomSize));
+    params.reverbDamping = static_cast<float>(clamp(m_acoustics.damping));
+    params.reverbEarly = static_cast<float>(clamp(m_acoustics.early));
+    params.distanceCutoff = static_cast<float>(
+        (m_acoustics.airCutoff < 0.0) ? 0.0 : m_acoustics.airCutoff);
+
+    // Fully dry: drop the tail rather than leaving it sitting in the delay
+    // lines, or the next time the mix comes up it replays what was in there.
+    if (params.reverbMix <= 0.0f) {
+        m_simulator->synthesizer().resetReverb();
+    }
+
+    m_simulator->synthesizer().setAudioParameters(params);
+    m_appliedAcoustics = m_acoustics;
+}
+
+void EngineSimApplication::toggleRevMatch() {
+    m_drive.revMatch = !m_drive.revMatch;
+
+    m_infoCluster->setLogMessage(
+        m_drive.revMatch
+            ? "[J] - Rev matching ENABLED"
+            : "[J] - Rev matching DISABLED");
+}
+
+void EngineSimApplication::setStarterEnabled(bool enabled) {
+    if (m_simulator == nullptr) return;
+    m_simulator->m_starterMotor.m_enabled = enabled;
+}
+
+void EngineSimApplication::shiftGear(int delta) {
+    if (m_simulator == nullptr) return;
+
+    // The TCU, paddle lockout, queue and rev-match all live in the shared
+    // DriveController; its events carry the log text.
+    m_drive.requestShift(delta);
+    drainDriveEvents();
+}
+
+void EngineSimApplication::drainDriveEvents() {
+    for (const DriveController::Event &e : m_drive.drainEvents()) {
+        m_infoCluster->setLogMessage(e.text);
+    }
+}
+
+void EngineSimApplication::toggleLaunchControl() {
+    m_drive.launchEnabled = !m_drive.launchEnabled;
+    const bool available = m_drive.getStatus().launchAvailable
+        || (m_transmission != nullptr && m_transmission->getTcuParameters().LaunchControl);
+    m_infoCluster->setLogMessage(
+        !available ? "[F5] - This engine has no launch control (launch_control in .mr)"
+        : m_drive.launchEnabled ? "[F5] - Launch control ON: brake + full throttle in 1st"
+        : "[F5] - Launch control OFF");
+}
+
+void EngineSimApplication::toggleAssist() {
+    m_drive.assist.master = !m_drive.assist.master;
+    m_infoCluster->setLogMessage(
+        m_drive.assist.master ? "[F6] - SHIFT ASSIST ON" : "[F6] - SHIFT ASSIST OFF");
+}
+
+void EngineSimApplication::toggleAssistOption(
+    bool DriveController::Assist::*option, const char *name)
+{
+    bool &v = m_drive.assist.*option;
+    v = !v;
+    m_infoCluster->setLogMessage(
+        std::string("SHIFT ASSIST: ") + name + (v ? " ON" : " OFF")
+        + (m_drive.assist.master ? "" : "  (assist is off - press F6)"));
+}
+
+void EngineSimApplication::toggleTcu() {
+    const bool on = !m_drive.isTcuEnabled();
+    m_drive.setTcuEnabled(on);
+    m_infoCluster->setLogMessage(on ? "TCU ENABLED" : "TCU DISABLED - money shifts allowed");
+}
+
+bool EngineSimApplication::isIgnitionEnabled() const {
+    return m_simulator != nullptr
+        && m_simulator->getEngine() != nullptr
+        && m_simulator->getEngine()->getIgnitionModule()->m_enabled;
+}
+
+bool EngineSimApplication::isDynoEnabled() const {
+    return m_simulator != nullptr && m_simulator->m_dyno.m_enabled;
+}
+
+bool EngineSimApplication::isStarterEnabled() const {
+    return m_simulator != nullptr && m_simulator->m_starterMotor.m_enabled;
+}
+
+bool EngineSimApplication::isBackfireEnabled() const {
+    return m_iceEngine != nullptr && m_iceEngine->getBackfireEnabled();
+}
+
 void EngineSimApplication::refreshUserInterface() {
     m_uiManager.destroy();
     m_uiManager.initialize(this);
@@ -1060,9 +1406,13 @@ void EngineSimApplication::refreshUserInterface() {
     m_loadSimulationCluster = m_uiManager.getRoot()->addElement<LoadSimulationCluster>();
     m_mixerCluster = m_uiManager.getRoot()->addElement<MixerCluster>();
     m_infoCluster = m_uiManager.getRoot()->addElement<InfoCluster>();
+    m_heroCluster = m_uiManager.getRoot()->addElement<HeroCluster>();
+    // Added last so it sits on top of the clusters and wins the hit test.
+    m_controlBar = m_uiManager.getRoot()->addElement<ControlBar>();
 
     m_infoCluster->setEngine(m_iceEngine);
     m_rightGaugeCluster->m_simulator = m_simulator;
+    m_heroCluster->m_simulator = m_simulator;
     m_rightGaugeCluster->setEngine(m_iceEngine);
     m_oscCluster->setSimulator(m_simulator);
     if (m_iceEngine != nullptr) {
@@ -1080,7 +1430,9 @@ void EngineSimApplication::startRecording() {
     atg_dtv::Encoder::VideoSettings settings{};
 
     // Output filename
-    settings.fname = "../workspace/video_capture/engine_sim_video_capture.mp4";
+    const std::string videoOut =
+        workspacePath("video_capture") + "/engine_sim_video_capture.mp4";
+    settings.fname = videoOut.c_str();
     settings.inputWidth = m_engine.GetScreenWidth();
     settings.inputHeight = m_engine.GetScreenHeight();
     settings.width = settings.inputWidth;
@@ -1091,6 +1443,143 @@ void EngineSimApplication::startRecording() {
 
     m_encoder.run(settings, 2);
 #endif /* ATG_ENGINE_SIM_VIDEO_CAPTURE */
+}
+
+// Captures land in <repo>/workspace/<sub>, derived from the resolved asset
+// path rather than the working directory -- the app can now be started from
+// the repo root as well as from build/.
+std::string EngineSimApplication::workspacePath(const std::string &sub) const {
+    const std::filesystem::path dir =
+        std::filesystem::path(m_assetPath).parent_path() / "workspace" / sub;
+
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+
+    return dir.string();
+}
+
+void EngineSimApplication::scanEngineFiles() {
+    m_engineFiles.clear();
+
+    const std::filesystem::path root =
+        std::filesystem::path(m_assetPath) / "engines";
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) return;
+
+    for (auto it = std::filesystem::recursive_directory_iterator(root, ec);
+         it != std::filesystem::recursive_directory_iterator();
+         it.increment(ec))
+    {
+        if (ec) break;
+        if (!it->is_regular_file(ec)) continue;
+        if (it->path().extension() != ".mr") continue;
+
+        // Store relative to assets/ with forward slashes, which is the form an
+        // .mr import statement needs.
+        const std::filesystem::path rel =
+            std::filesystem::relative(it->path(), "../assets", ec);
+        if (ec) continue;
+
+        m_engineFiles.push_back(rel.generic_string());
+    }
+
+    std::sort(m_engineFiles.begin(), m_engineFiles.end());
+}
+
+void EngineSimApplication::selectEngine(int index) {
+    if (m_engineFiles.empty()) return;
+
+    index = (index % (int)m_engineFiles.size() + (int)m_engineFiles.size())
+        % (int)m_engineFiles.size();
+
+    // Regenerate the wrapper that main.mr normally is, pointing at the chosen
+    // engine. It is written into assets/ so its relative imports resolve exactly
+    // as main.mr's do.
+    const std::string generated = m_assetPath + "/_vrum_current.mr";
+    {
+        std::ofstream f(generated, std::ios::trunc);
+        if (!f.is_open()) {
+            m_infoCluster->setLogMessage("Could not write " + generated);
+            return;
+        }
+
+        f << "// GENERATED by VRUM engine switching (PageUp/PageDown).\n"
+          << "// Edited automatically -- change assets/main.mr instead.\n"
+          << "import \"engine_sim.mr\"\n"
+          << "import \"themes/default.mr\"\n"
+          << "import \"" << m_engineFiles[index] << "\"\n\n"
+          << "use_default_theme()\n"
+          << "main()\n";
+    }
+
+    const std::string previousPath = m_scriptPath;
+    const int previousEngine = m_currentEngine;
+
+    m_currentEngine = index;
+    m_scriptPath = generated;
+
+    m_audioSource->SetMode(ysAudioSource::Mode::Stop);
+    const bool loaded = loadScript();
+    if (!loaded) {
+        // Keep the engine that is already running rather than dying on a script
+        // that does not compile.
+        m_scriptPath = previousPath;
+        m_currentEngine = previousEngine;
+    }
+
+    if (loaded && m_simulator != nullptr && m_simulator->getEngine() != nullptr) {
+        m_audioSource->SetMode(ysAudioSource::Mode::Loop);
+        m_infoCluster->setLogMessage(
+            "[" + std::to_string(index + 1) + "/"
+            + std::to_string(m_engineFiles.size()) + "] "
+            + m_simulator->getEngine()->getName());
+    }
+    else {
+        // A script that fails to compile leaves no engine; say so rather than
+        // leaving the user staring at a dead simulator.
+        m_infoCluster->setLogMessage(
+            "FAILED to load " + m_engineFiles[index]);
+    }
+}
+
+void EngineSimApplication::cycleEngine(int delta) {
+    if (m_engineFiles.empty()) {
+        m_infoCluster->setLogMessage("No engine scripts found in assets/engines");
+        return;
+    }
+
+    selectEngine(m_currentEngine < 0 ? 0 : m_currentEngine + delta);
+}
+
+void EngineSimApplication::toggleAudioCapture() {
+    if (m_audioCapture.isOpen()) {
+        const std::string path = m_audioCapture.getPath();
+        const double seconds = m_audioCapture.getDuration();
+        m_audioCapture.close();
+
+        m_infoCluster->setLogMessage(
+            "[P] - Saved " + std::to_string(seconds).substr(0, 4) + "s to " + path);
+    }
+    else {
+        // Same relative-path convention as the video capture: the app runs from
+        // build/, so this lands in the repo's gitignored workspace/ folder.
+        const std::time_t now = std::time(nullptr);
+        std::tm tm{};
+        localtime_s(&tm, &now);
+
+        char stamp[32];
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
+
+        const std::string path =
+            workspacePath("audio_capture") + "/vrum_" + std::string(stamp) + ".wav";
+
+        if (m_audioCapture.open(path, 44100, 1)) {
+            m_infoCluster->setLogMessage("[P] - Recording audio to " + path);
+        }
+        else {
+            m_infoCluster->setLogMessage("[P] - FAILED to open " + path);
+        }
+    }
 }
 
 void EngineSimApplication::updateScreenSizeStability() {

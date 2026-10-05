@@ -80,6 +80,19 @@ public:
     Dynamometer m_dyno;
     StarterMotor m_starterMotor;
 
+    // VRUM: wheel brake. A friction constraint on the vehicle's rotating mass,
+    // so it slows the car (and through the clutch, the engine) rather than
+    // being an engine brake. m_maxTorque is driven from the brake input.
+    atg_scs::RotationFrictionConstraint m_brake;
+
+    // Peak braking torque at full brake input, in the rotating mass's frame.
+    void setBrake(double amount) {
+        const double torque = amount * m_brakeMaxTorque;
+        m_brake.m_minTorque = -torque;
+        m_brake.m_maxTorque = torque;
+    }
+    double m_brakeMaxTorque = 3000.0;
+
 protected:
     void initializeSynthesizer();
     virtual void simulateStep_();

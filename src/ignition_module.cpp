@@ -50,6 +50,16 @@ void IgnitionModule::reset() {
     resetIgnitionEvents();
 }
 
+bool IgnitionModule::cutEvent() const {
+    const double cut = (m_tcuCutFraction > m_ignitionCutFraction)
+        ? m_tcuCutFraction
+        : m_ignitionCutFraction;
+    if (cut <= 0.0) return false;
+    if (cut >= 1.0) return true;
+
+    return ((double)rand() / RAND_MAX) < cut;
+}
+
 void IgnitionModule::update(double dt) {
     const double cycleAngle = m_crankshaft->getCycleAngle();
 
@@ -69,7 +79,7 @@ void IgnitionModule::update(double dt) {
                 }
 
                 if (adjustedAngle >= r0 && adjustedAngle < r1) {
-                    m_plugs[i].ignitionEvent = m_plugs[i].enabled;
+                    m_plugs[i].ignitionEvent = m_plugs[i].enabled && !cutEvent();
                 }
             }
             else {
@@ -79,7 +89,7 @@ void IgnitionModule::update(double dt) {
                 }
 
                 if (adjustedAngle >= r1 && adjustedAngle < r0) {
-                    m_plugs[i].ignitionEvent = m_plugs[i].enabled;
+                    m_plugs[i].ignitionEvent = m_plugs[i].enabled && !cutEvent();
                 }
             }
         }

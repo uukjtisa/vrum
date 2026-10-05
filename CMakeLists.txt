@@ -52,6 +52,7 @@ add_library(engine-sim STATIC
     src/combustion_chamber.cpp
     src/connecting_rod.cpp
     src/convolution_filter.cpp
+    src/drive_controller.cpp
     src/cylinder_bank.cpp
     src/cylinder_head.cpp
     src/delay_filter.cpp
@@ -79,6 +80,7 @@ add_library(engine-sim STATIC
     src/simulator.cpp
     src/standard_valvetrain.cpp
     src/starter_motor.cpp
+    src/reverb_filter.cpp
     src/synthesizer.cpp
     src/throttle.cpp
     src/transmission.cpp
@@ -87,6 +89,8 @@ add_library(engine-sim STATIC
     src/vehicle.cpp
     src/vehicle_drag_constraint.cpp
     src/vtec_valvetrain.cpp
+    src/wav_reader.cpp
+    src/wav_writer.cpp
 
     # Include files
     include/audio_buffer.h
@@ -96,6 +100,7 @@ add_library(engine-sim STATIC
     include/combustion_chamber.h
     include/connecting_rod.h
     include/convolution_filter.h
+    include/drive_controller.h
     include/cylinder_bank.h
     include/cylinder_head.h
     include/delay_filter.h
@@ -123,6 +128,7 @@ add_library(engine-sim STATIC
     include/simulator.h
     include/standard_valvetrain.h
     include/starter_motor.h
+    include/reverb_filter.h
     include/synthesizer.h
     include/throttle.h
     include/transmission.h
@@ -132,6 +138,8 @@ add_library(engine-sim STATIC
     include/vehicle.h
     include/vehicle_drag_constraint.h
     include/vtec_valvetrain.h
+    include/wav_reader.h
+    include/wav_writer.h
 )
 
 target_link_libraries(engine-sim
@@ -219,7 +227,9 @@ add_executable(engine-sim-app WIN32
     src/crankshaft_object.cpp
     src/cylinder_bank_object.cpp
     src/cylinder_head_object.cpp
+    src/control_bar.cpp
     src/ui_button.cpp
+    src/ui_slider.cpp
     src/ui_utilities.cpp
     src/combustion_chamber_object.cpp
     src/oscilloscope.cpp
@@ -237,6 +247,7 @@ add_executable(engine-sim-app WIN32
     src/load_simulation_cluster.cpp
     src/mixer_cluster.cpp
     src/info_cluster.cpp
+    src/hero_cluster.cpp
 
     # Include files
     include/delta.h
@@ -254,7 +265,9 @@ add_executable(engine-sim-app WIN32
     include/crankshaft_object.h
     include/cylinder_bank_object.h
     include/cylinder_head_object.h
+    include/control_bar.h
     include/ui_button.h
+    include/ui_slider.h
     include/ui_utilities.h
     include/combustion_chamber_object.h
     include/oscilloscope.h
@@ -272,6 +285,7 @@ add_executable(engine-sim-app WIN32
     include/load_simulation_cluster.h
     include/mixer_cluster.h
     include/info_cluster.h
+    include/hero_cluster.h
 )
 
 target_link_libraries(engine-sim-app
@@ -298,6 +312,21 @@ endif (DISCORD_ENABLED)
 
 target_include_directories(engine-sim-app
     PUBLIC dependencies/submodules)
+
+# VRUM: headless render-to-WAV bench. Console app, no window, no delta-studio
+# rendering -- lets engine tuning be swept and measured unattended.
+if (PIRANHA_ENABLED)
+    add_executable(engine-sim-bench
+        src/bench_main.cpp
+    )
+
+    target_link_libraries(engine-sim-bench
+        engine-sim
+        engine-sim-script-interpreter)
+
+    target_include_directories(engine-sim-bench
+        PUBLIC dependencies/submodules)
+endif (PIRANHA_ENABLED)
 
 add_subdirectory(dependencies)
 

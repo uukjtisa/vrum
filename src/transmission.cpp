@@ -13,6 +13,8 @@ Transmission::Transmission() {
     m_rotatingMass = nullptr;
     m_vehicle = nullptr;
     m_clutchPressure = 0.0;
+    m_tcuEnabled = true;
+    m_tcuOverRevMargin = units::rpm(200);
 }
 
 Transmission::~Transmission() {
@@ -26,6 +28,10 @@ Transmission::~Transmission() {
 void Transmission::initialize(const Parameters &params) {
     m_gearCount = params.GearCount;
     m_maxClutchTorque = params.MaxClutchTorque;
+    m_tcuEnabled = params.TcuEnabled;
+    m_tcuOverRevMargin = params.TcuOverRevMargin;
+    m_params = params;
+    m_params.GearRatios = nullptr;
     m_gearRatios = new double[params.GearCount];
     memcpy(m_gearRatios, params.GearRatios, sizeof(double) * m_gearCount);
 }

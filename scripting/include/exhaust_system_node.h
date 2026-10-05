@@ -34,6 +34,10 @@ namespace es_script {
             addInput("primary_flow_rate", &m_parameters.primaryFlowRate);
             addInput("audio_volume", &m_parameters.audioVolume);
             addInput("velocity_decay", &m_parameters.velocityDecay);
+            addInput("backfire_rate", &m_parameters.backfireRate);
+            addInput("backfire_temperature", &m_parameters.backfireAutoignitionTemperature);
+            addInput("backfire_fuel_threshold", &m_parameters.backfireFuelThreshold);
+            addInput("backfire_refractory", &m_parameters.backfireRefractory);
             addInput("impulse_response", &m_impulseResponse, InputTarget::Type::Object);
 
             ObjectReferenceNode<ExhaustSystemNode>::registerInputs();

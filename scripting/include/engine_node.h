@@ -162,6 +162,17 @@ namespace es_script {
             addInput("throttle", &m_throttle, InputTarget::Type::Object);
             addInput("simulation_frequency", &m_parameters.initialSimulationFrequency);
             addInput("hf_gain", &m_parameters.initialHighFrequencyGain);
+            addInput("hf_cutoff", &m_parameters.initialHighFrequencyCutoff);
+            addInput("hf_bite_cutoff", &m_parameters.initialHighFrequencyBiteCutoff);
+            addInput("hf_bite_min_speed", &m_parameters.hfBiteMinSpeed);
+            addInput("hf_bite_max_speed", &m_parameters.hfBiteMaxSpeed);
+            addInput("fluid_simulation_steps", &m_parameters.fluidSimulationSteps);
+            addInput("leveler_target", &m_parameters.levelerTarget);
+            addInput("overrun_fuel_rate", &m_parameters.overrunFuelRate);
+            addInput("overrun_throttle_threshold", &m_parameters.overrunThrottleThreshold);
+            addInput("overrun_min_speed", &m_parameters.overrunMinSpeed);
+            addInput("overrun_duration", &m_parameters.overrunDuration);
+            addInput("overrun_ignition_cut", &m_parameters.overrunIgnitionCutFraction);
             addInput("jitter", &m_parameters.initialJitter);
             addInput("noise", &m_parameters.initialNoise);
 

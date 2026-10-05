@@ -1,3 +1,103 @@
+# VRUM — Virtual Reciprocating-engine Underhood Modeler
+
+> *(also, "vrum" is just the sound the thing makes.)*
+
+**VRUM** is a fork of [ange-yaghi/engine-sim](https://github.com/ange-yaghi/engine-sim)
+(MIT, © 2022 Ange Yaghi — see `LICENSE`). Everything that makes the sound —
+per-cylinder gas dynamics, exhaust pulses, impulse-response convolution — is
+Ange Yaghi's work. VRUM adds a screaming **Lamborghini-style V12 with a Gintani
+straight-pipe exhaust**, a gearbox you can actually drive, and a game-style
+driver's panel.
+
+![VRUM](docs/vrum.png)
+
+## Download
+
+Grab the latest Windows build from **[Releases](../../releases)**, unzip, and
+double-click `VRUM.exe`. No install, nothing else needed.
+
+## What VRUM adds
+
+**Driving**
+- **TCU** — refuses a downshift that would spin the engine past the limiter,
+  computed from the ratio step *before* the shift happens.
+- **Real shift sequence** — clutch open → ratio swap → clutch close, timed per
+  car (`shift_time`). Paddle presses during a shift are locked out, so paddle
+  spam can no longer push the car along.
+- **Rev-match blip** on downshifts — wide-open throttle closed on a predicted
+  crossing, so it never hunts or overshoots.
+- **Launch control** — hold brake + full throttle in 1st; the engine sits on a
+  crackling soft limiter, release the brake to launch.
+- **ISR upshift cut** — Lamborghini-style spark cut on upshifts (the "crack").
+- **Shift Assist** — optional driver aid with separate toggles: queue a refused
+  downshift until it is safe, auto-upshift at the limiter, auto-downshift under
+  braking.
+- **Cooling model + limp mode** — hold it wide open on the dyno long enough and
+  it overheats and protects itself.
+- **Anti-stall clutch** — selecting 1st at a standstill no longer stalls it.
+
+**Sound**
+- Upstream's hard-coded 1.9 kHz input filter is now a tunable `hf_cutoff`, so
+  the top end actually reaches the exhaust model.
+- Equal-length headers on the V12 — firing-band energy up ~670×.
+- Exhaust backfire / overrun crackle model (toggle with `O`).
+- Acoustics presets — CLOSE / OUTDOOR / TUNNEL reverb with live sliders.
+- Partitioned FFT convolution — identical sound, ~28× cheaper.
+
+**Interface**
+- Driver's panel: shift lights, digital tach, big gear with paddle feedback and
+  queued-shift indicator, Shift Advisor (what the next downshift would rev to),
+  status chips (TCU / ASSIST / LAUNCH / ISR / LIMP), coolant and oil temps.
+- Clean UI font (Chakra Petch), clickable control bar for every action.
+- Switch engines live with `PageUp` / `PageDown`.
+- `P` records exactly what you hear to a WAV.
+
+**Every engine is a script.** Gearbox, TCU, launch control and cooling are all
+set per car in its `.mr` file (see `es/objects/objects.mr` for every input), so
+a 1970s manual can have no TCU while a supercar gets ISR shifts.
+
+## Controls
+
+| Key | Action |
+| :---: | :--- |
+| `A` | Ignition |
+| `S` (hold) | Starter |
+| `Q` `W` `E` `R` | Throttle 1% / 10% / 20% / 100% |
+| `B` (hold) | Brake |
+| `Up` / `Down` | Shift up / down |
+| `J` | Rev-match on/off |
+| `F5` | Launch control on/off |
+| `F6` | Shift Assist on/off (options on the control bar) |
+| `O` | Backfires on/off |
+| `.` | Cycle acoustics preset |
+| `D` | Dyno |
+| `P` | Record WAV |
+| `PageUp` / `PageDown` | Switch engine |
+| `Enter` | Reload the engine script |
+| `Z` / `X` / `C` / `K` + scroll | Volume / convolution / HF gain / HF cutoff |
+
+## Build from source
+
+Needs Windows, **Visual Studio 2022** with the *Desktop development with C++*
+workload, **CMake** and **Git**. Then:
+
+```
+build.bat
+```
+
+It downloads everything else locally (SDL2, SDL2_image, Boost.filesystem via
+vcpkg; Flex/Bison via winflexbison), applies VRUM's small fixes to the
+submodules from `patches/`, and puts `VRUM.exe` in the project root. The first
+build compiles SDL2 and Boost and takes a while; later builds are quick.
+
+`VRUM-bench.exe` renders audio headlessly for measurement — run it from
+`build/` (`--help` lists the options) and analyse with
+`scripts/analyze_sound.py`.
+
+---
+
+*The original engine-sim README follows.*
+
 # Engine Simulator
 ![Alt text](docs/public/screenshots/screenshot_v01.png?raw=true)
 ---

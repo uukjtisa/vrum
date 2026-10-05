@@ -44,6 +44,39 @@ class Engine : public Part {
             double initialHighFrequencyGain;
             double initialNoise;
             double initialJitter;
+
+            // Input-stage low-pass cutoff in Hz; 0 = auto (0.45 * simulation
+            // frequency). This is the brightness ceiling of the whole engine note.
+            double initialHighFrequencyCutoff = 0.0;
+            double initialHighFrequencyBiteCutoff = 0.0;
+            // Engine speed window (rad/s) over which the hf_gain bite fades in.
+            // max <= min disables the ramp and the bite is always at full value.
+            double hfBiteMinSpeed = 0.0;
+            double hfBiteMaxSpeed = 0.0;
+            // Gas-system substeps per simulation step. Higher = finer fluid
+            // timestep but the cost multiplies against simulation_frequency.
+            int fluidSimulationSteps = 8;
+            // Auto-leveler peak target, out of 32767. The leveler is feedback-only
+            // with no lookahead, so a transient bigger than its running peak is
+            // emitted at the old gain -- headroom is what stops that clipping.
+            double levelerTarget = 30000.0;
+
+            // Overrun ("pop tune") fuel enrichment. On a closed throttle a real
+            // tune injects fuel that does not burn in the cylinder, so raw fuel
+            // reaches the hot pipe and cracks. Without it, lifting off admits
+            // almost no fuel (measured p_fuel 0.005) and nothing can ignite.
+            // 0 = off.
+            double overrunFuelRate = 0.0;
+            double overrunThrottleThreshold = 0.15;   // below this = "lifted"
+            double overrunMinSpeed = 0.0;             // rad/s; below this, no pops
+            // Seconds of crackle allowed per lift-off. Real decel pops are a
+            // burst that fades, not a sound that continues to a standstill.
+            // Re-arms only when the throttle is opened again.
+            double overrunDuration = 1.2;
+            // Fraction of ignition events suppressed while crackling. Must stay
+            // well below 1.0 -- a total cut leaves the engine making no power at
+            // all, so it drags to a stall and cannot recover without throttle.
+            double overrunIgnitionCutFraction = 0.45;
         };
 
     public:
@@ -106,6 +139,36 @@ class Engine : public Part {
         double getInitialHighFrequencyGain() const { return m_initialHighFrequencyGain; }
         double getInitialNoise() const { return m_initialNoise; }
         double getInitialJitter() const { return m_initialJitter; }
+        double getInitialHighFrequencyCutoff() const { return m_initialHighFrequencyCutoff; }
+        double getInitialHighFrequencyBiteCutoff() const { return m_initialHighFrequencyBiteCutoff; }
+        // Set while a rev-match blip is running. The overrun crackle works by
+        // cutting a fraction of the sparks, which is exactly how the rev
+        // limiter works too -- so letting it fire during an automatic blip
+        // makes the throttle stumble in the driver's hand. The crackle is still
+        // wanted on the settle afterwards, just not mid-blip.
+        void setOverrunSuppressed(bool suppressed) { m_overrunSuppressed = suppressed; }
+        bool getOverrunSuppressed() const { return m_overrunSuppressed; }
+
+        double getHfBiteMinSpeed() const { return m_hfBiteMinSpeed; }
+        double getHfBiteMaxSpeed() const { return m_hfBiteMaxSpeed; }
+        void setHfBiteSpeedWindow(double minSpeed, double maxSpeed) {
+            m_hfBiteMinSpeed = minSpeed;
+            m_hfBiteMaxSpeed = maxSpeed;
+        }
+        int getFluidSimulationSteps() const { return m_fluidSimulationSteps; }
+        double getLevelerTarget() const { return m_levelerTarget; }
+        double getOverrunFuelRate() const { return m_overrunFuelRate; }
+        double getOverrunThrottleThreshold() const { return m_overrunThrottleThreshold; }
+        double getOverrunMinSpeed() const { return m_overrunMinSpeed; }
+        double getOverrunDuration() const { return m_overrunDuration; }
+        double getOverrunIgnitionCutFraction() const {
+            return m_overrunIgnitionCutFraction;
+        }
+        // Runtime master switch for backfires (in-app toggle). Independent of
+        // the .mr tuning so it can be silenced without editing anything.
+        bool getBackfireEnabled() const { return m_backfireEnabled; }
+        void setBackfireEnabled(bool e) { m_backfireEnabled = e; }
+        void setOverrunFuelRate(double r) { m_overrunFuelRate = r; }
 
         virtual Simulator *createSimulator(Vehicle *vehicle, Transmission *transmission);
 
@@ -135,6 +198,19 @@ class Engine : public Part {
         double m_initialHighFrequencyGain;
         double m_initialNoise;
         double m_initialJitter;
+        double m_initialHighFrequencyCutoff;
+        double m_initialHighFrequencyBiteCutoff;
+        bool m_overrunSuppressed = false;
+        double m_hfBiteMinSpeed;
+        double m_hfBiteMaxSpeed;
+        int m_fluidSimulationSteps;
+        double m_levelerTarget;
+        double m_overrunFuelRate;
+        double m_overrunThrottleThreshold;
+        double m_overrunMinSpeed;
+        double m_overrunDuration;
+        double m_overrunIgnitionCutFraction;
+        bool m_backfireEnabled = false;
 
         ExhaustSystem *m_exhaustSystems;
         int m_exhaustSystemCount;

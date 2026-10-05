@@ -21,6 +21,9 @@ Synthesizer::Synthesizer() {
     m_inputSampleRate = 0.0;
     m_audioSampleRate = 0.0;
 
+    m_targetInputFilterCutoff = 0.0f;
+    m_appliedInputFilterCutoff = -1.0f;
+
     m_lastInputSampleOffset = 0.0;
 
     m_run = true;
@@ -70,13 +73,25 @@ void Synthesizer::initialize(const Parameters &p) {
             m_audioParameters.inputSampleNoiseFrequencyCutoff,
             m_audioSampleRate);
 
-        m_filters[i].antialiasing.setCutoffFrequency(1900.0f, m_audioSampleRate);
     }
+
+    // Was a hard-coded 1900 Hz here. See AudioParameters::inputFilterCutoff.
+    m_targetInputFilterCutoff = m_audioParameters.inputFilterCutoff;
+    m_appliedInputFilterCutoff = -1.0f;
+    updateInputFilterCutoff();
 
     m_levelingFilter.p_target = m_audioParameters.levelerTarget;
     m_levelingFilter.p_maxLevel = m_audioParameters.levelerMaxGain;
     m_levelingFilter.p_minLevel = m_audioParameters.levelerMinGain;
     m_antialiasing.setCutoffFrequency(m_audioSampleRate * 0.45f, m_audioSampleRate);
+
+    m_reverb.initialize(m_audioSampleRate);
+    m_reverb.setRoomSize(m_audioParameters.reverbRoomSize);
+    m_reverb.setDamping(m_audioParameters.reverbDamping);
+    m_reverb.setEarlyLevel(m_audioParameters.reverbEarly);
+    m_appliedRoomSize = m_audioParameters.reverbRoomSize;
+    m_appliedDamping = m_audioParameters.reverbDamping;
+    m_appliedEarly = m_audioParameters.reverbEarly;
 
     for (int i = 0; i < m_audioBufferSize; ++i) {
         m_audioBuffer.write(0);
@@ -129,6 +144,8 @@ void Synthesizer::destroy() {
         m_filters[i].convolution.destroy();
     }
 
+    m_reverb.destroy();
+
     delete[] m_inputChannels;
     delete[] m_filters;
 
@@ -165,7 +182,32 @@ void Synthesizer::waitProcessed() {
     }
 }
 
+float Synthesizer::effectiveInputFilterCutoff() const {
+    // The signal arriving here is linearly interpolated from m_inputSampleRate up to
+    // m_audioSampleRate, so nothing above the simulation Nyquist is real -- anything
+    // past it is interpolation imaging. Cap at 0.45 * inputSampleRate, matching what
+    // the output stage does with the audio rate.
+    const float ceiling = std::max(100.0f, 0.45f * m_inputSampleRate);
+    const float requested = m_targetInputFilterCutoff.load(std::memory_order_relaxed);
+    const float cutoff = (requested > 0.0f) ? requested : ceiling;
+
+    return std::min(std::max(100.0f, cutoff), ceiling);
+}
+
+void Synthesizer::updateInputFilterCutoff() {
+    const float cutoff = effectiveInputFilterCutoff();
+    if (cutoff == m_appliedInputFilterCutoff) return;
+
+    for (int i = 0; i < m_inputChannelCount; ++i) {
+        m_filters[i].antialiasing.setCutoffFrequency(cutoff, m_audioSampleRate);
+    }
+
+    m_appliedInputFilterCutoff = cutoff;
+}
+
 void Synthesizer::writeInput(const double *data) {
+    updateInputFilterCutoff();
+
     m_inputWriteOffset += (double)m_audioSampleRate / m_inputSampleRate;
     if (m_inputWriteOffset >= (double)m_inputBufferSize) {
         m_inputWriteOffset -= (double)m_inputBufferSize;
@@ -173,7 +215,19 @@ void Synthesizer::writeInput(const double *data) {
 
     for (int i = 0; i < m_inputChannelCount; ++i) {
         RingBuffer<float> &buffer = m_inputChannels[i].data;
-        const double lastInputSample = m_inputChannels[i].lastInputSample;
+        double *history = m_inputChannels[i].history;
+
+        // Slide the newest simulator sample in. Interpolation then runs one
+        // input sample behind the simulation so the trailing tangent is
+        // available; at 12 kHz that is 83 us of added latency.
+        history[0] = history[1];
+        history[1] = history[2];
+        history[2] = history[3];
+        history[3] = data[i];
+
+        const double p0 = history[0], p1 = history[1];
+        const double p2 = history[2], p3 = history[3];
+
         const size_t baseIndex = buffer.writeIndex();
         const double distance =
             inputDistance(m_inputWriteOffset, m_lastInputSampleOffset);
@@ -182,13 +236,20 @@ void Synthesizer::writeInput(const double *data) {
         for (; s <= distance; s += 1.0) {
             if (s >= m_inputBufferSize) s -= m_inputBufferSize;
 
+            // Catmull-Rom through p1 and p2.
             const double f = s / distance;
-            const double sample = lastInputSample * (1 - f) + data[i] * f;
+            const double f2 = f * f;
+            const double f3 = f2 * f;
+            const double sample = 0.5 * (
+                (2.0 * p1)
+                + (-p0 + p2) * f
+                + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * f2
+                + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * f3);
 
             buffer.write(m_filters[i].antialiasing.fast_f(static_cast<float>(sample)));
         }
 
-        m_inputChannels[i].lastInputSample = data[i];
+        m_inputChannels[i].lastInputSample = p2;
     }
 
     m_lastInputSampleOffset = m_inputWriteOffset;
@@ -242,10 +303,54 @@ void Synthesizer::renderAudio() {
 
     lk0.unlock();
 
+    // Flush the tail on the audio thread rather than from whoever toggled the
+    // perspective; the comb buffers are read here every sample, so clearing
+    // them from another thread would be a data race. Without this, switching
+    // the perspective back on replays whatever was left in the delay lines.
+    if (m_reverbResetRequested.exchange(false, std::memory_order_relaxed)) {
+        m_reverb.reset();
+    }
+
+    // Perspective coefficients only change when the user moves them, so only
+    // recompute on a real change -- setCutoffFrequency runs a tan() and the
+    // reverb setters touch every comb.
+    if (m_audioParameters.reverbRoomSize != m_appliedRoomSize) {
+        m_reverb.setRoomSize(m_audioParameters.reverbRoomSize);
+        m_appliedRoomSize = m_audioParameters.reverbRoomSize;
+    }
+    if (m_audioParameters.reverbDamping != m_appliedDamping) {
+        m_reverb.setDamping(m_audioParameters.reverbDamping);
+        m_appliedDamping = m_audioParameters.reverbDamping;
+    }
+    if (m_audioParameters.reverbEarly != m_appliedEarly) {
+        m_reverb.setEarlyLevel(m_audioParameters.reverbEarly);
+        m_appliedEarly = m_audioParameters.reverbEarly;
+    }
+
+    const float distance = m_audioParameters.distanceCutoff;
+    m_distanceFilterActive = (distance > 0.0f);
+    if (m_distanceFilterActive && distance != m_appliedDistanceCutoff) {
+        const float ceiling = 0.45f * m_audioSampleRate;
+        const float cutoff = (distance > ceiling) ? ceiling : distance;
+        m_distanceFilter.setCutoffFrequency(cutoff, m_audioSampleRate);
+        m_appliedDistanceCutoff = distance;
+    }
+
+    // Never let the bite filter reach the output Nyquist, or the Butterworth
+    // coefficients blow up.
+    const float biteRequested = m_audioParameters.hfBiteCutoff;
+    m_biteFilterActive = (biteRequested > 0.0f);
+
     for (int i = 0; i < m_inputChannelCount; ++i) {
         m_filters[i].airNoiseLowPass.setCutoffFrequency(
             static_cast<float>(m_audioParameters.airNoiseFrequencyCutoff), m_audioSampleRate);
         m_filters[i].jitterFilter.setJitterScale(m_audioParameters.inputSampleNoise);
+
+        if (m_biteFilterActive) {
+            const float ceiling = 0.45f * m_audioSampleRate;
+            const float bite = (biteRequested > ceiling) ? ceiling : biteRequested;
+            m_filters[i].derivativeLowPass.setCutoffFrequency(bite, m_audioSampleRate);
+        }
     }
 
     for (int i = 0; i < n; ++i) {
@@ -280,7 +385,8 @@ void Synthesizer::setInputSampleRate(double sampleRate) {
 
 int16_t Synthesizer::renderAudio(int inputSample) {
     const float airNoise = m_audioParameters.airNoise;
-    const float dF_F_mix = m_audioParameters.dF_F_mix;
+    const float biteScale = m_biteScale.load(std::memory_order_relaxed);
+    const float dF_F_mix = m_audioParameters.dF_F_mix * biteScale;
     const float convAmount = m_audioParameters.convolution;
 
     float signal = 0;
@@ -293,7 +399,10 @@ int16_t Synthesizer::renderAudio(int inputSample) {
         const float f_in = jitteredSample;
         const float f_dc = m_filters[i].inputDcFilter.fast_f(f_in);
         const float f = f_in - f_dc;
-        const float f_p = m_filters[i].derivative.f(f_in);
+        const float f_p_raw = m_filters[i].derivative.f(f_in);
+        const float f_p = m_biteFilterActive
+            ? m_filters[i].derivativeLowPass.fast_f(f_p_raw)
+            : f_p_raw;
 
         const float noise = 2.0 * ((double)rand() / RAND_MAX) - 1.0;
         const float r =
@@ -316,6 +425,20 @@ int16_t Synthesizer::renderAudio(int inputSample) {
     }
 
     signal = m_antialiasing.fast_f(signal);
+
+    // Listening perspective. Runs before the leveler so the leveler still sees
+    // (and controls) the final signal including its tail -- placed after it,
+    // a long reverb would ride on top of the level the leveler had already set
+    // and clip.
+    const float reverbMix = m_audioParameters.reverbMix;
+    if (reverbMix > 0.0f) {
+        const float wet = m_reverb.f(signal);
+        signal = signal * (1.0f - reverbMix) + wet * reverbMix;
+    }
+
+    if (m_distanceFilterActive) {
+        signal = m_distanceFilter.fast_f(signal);
+    }
 
     m_levelingFilter.p_target = m_audioParameters.levelerTarget;
     const float v_leveled = m_levelingFilter.f(signal) * m_audioParameters.volume;
@@ -343,4 +466,8 @@ Synthesizer::AudioParameters Synthesizer::getAudioParameters() {
 void Synthesizer::setAudioParameters(const AudioParameters &params) {
     std::lock_guard<std::mutex> lock(m_lock0);
     m_audioParameters = params;
+
+    // Picked up by the simulation thread on its next writeInput().
+    m_targetInputFilterCutoff.store(
+        params.inputFilterCutoff, std::memory_order_relaxed);
 }

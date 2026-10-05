@@ -25,6 +25,14 @@ namespace es_script {
             addInput("diff_ratio", &m_parameters.diffRatio);
             addInput("tire_radius", &m_parameters.tireRadius);
             addInput("rolling_resistance", &m_parameters.rollingResistance);
+            addInput("cooling", &m_parameters.cooling);
+            addInput("engine_thermal_mass", &m_parameters.engineThermalMass);
+            addInput("coolant_heat_fraction", &m_parameters.coolantHeatFraction);
+            addInput("radiator_idle", &m_parameters.radiatorIdle);
+            addInput("radiator_airflow", &m_parameters.radiatorAirflow);
+            addInput("thermostat_temperature", &m_parameters.thermostatTemperature);
+            addInput("overheat_temperature", &m_parameters.overheatTemperature);
+            addInput("ambient_temperature", &m_parameters.ambientTemperature);
 
             ObjectReferenceNode<VehicleNode>::registerInputs();
         }

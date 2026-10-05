@@ -1,0 +1,36 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 15ffad10..035dab52 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -320,12 +320,14 @@ target_link_libraries(delta-core PUBLIC
+     d3d9
+     d3d10
+     d3d11
++    # VRUM: link only the RELEASE D3DX import libs. The debug variants
++    # (d3dx9d/d3dx10d/d3dx11d.lib) pull in debug DLLs like d3dx10d_43.dll that
++    # ship only with the old DirectX SDK, not the end-user runtime, so a Release
++    # build fails to launch with STATUS_DLL_NOT_FOUND. The release DLLs
++    # (d3dx9_43/d3dx10_43/d3dx11_43.dll) come with the DirectX June 2010 runtime.
+     ${D3DX_LIBS}/d3dx9.lib
+-    ${D3DX_LIBS}/d3dx9d.lib
+-    ${D3DX_LIBS}/d3dx10d.lib
+     ${D3DX_LIBS}/d3dx10.lib
+     ${D3DX_LIBS}/d3dx11.lib
+-    ${D3DX_LIBS}/d3dx11d.lib
+     ${D3DX_LIBS}/d3dxof.lib
+ 
+     # DXGI
+diff --git a/engines/basic/include/console.h b/engines/basic/include/console.h
+index 77459b18..9cbb3fcb 100644
+--- a/engines/basic/include/console.h
++++ b/engines/basic/include/console.h
+@@ -41,6 +41,9 @@ namespace dbasic {
+         UiRenderer *GetRenderer() const { return m_renderer; }
+ 
+         Font *GetFont() const { return m_font; }
++        // VRUM: the UI renderer batches every text quad into one draw bound
++        // to ONE font texture, so the app and the console must share a font.
++        void SetFont(Font *font) { m_font = font; }
+ 
+     protected:
+         // Settings

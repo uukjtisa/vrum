@@ -22,6 +22,26 @@ void EngineView::render() {
     if (m_drawFrame) {
         drawFrame(m_bounds, 1.0f, m_app->getForegroundColor(), m_app->getBackgroundColor(), false);
     }
+
+    // VRUM: only the controls that have no button. Everything that does now
+    // lives in the ControlBar along the bottom of the window, where it is
+    // clickable and shows its own state; repeating it here was just noise.
+    Bounds base = m_bounds.inset(16.0f);
+    Bounds upper = base;
+    upper.move({ 0.0f, 22.0f });
+
+    drawAlignedText(
+        "[W/E/R] THROTTLE    [SPACE] FINE CONTROL    [ENTER] RELOAD SCRIPT",
+        upper,
+        15.0f,
+        Bounds::bm,
+        Bounds::bm);
+    drawAlignedText(
+        "SCROLL WITH  [K] HF CUTOFF   [L] FLUID STEPS   [N] SIM FREQ   [Z] VOLUME",
+        base,
+        15.0f,
+        Bounds::bm,
+        Bounds::bm);
 }
 
 void EngineView::onMouseDown(const Point &mouseLocal) {

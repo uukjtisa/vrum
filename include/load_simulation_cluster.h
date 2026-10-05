@@ -25,6 +25,7 @@ class LoadSimulationCluster : public UiElement {
 
     protected:
         void drawCurrentGear(const Bounds &bounds);
+        void drawShiftAdvisor(const Bounds &bounds);
         void drawClutchPressureGauge(const Bounds &bounds);
         void drawSystemStatus(const Bounds &bounds);
         void updateHpAndTorque(float dt);

@@ -201,7 +201,8 @@ void LoadSimulationCluster::render() {
 void LoadSimulationCluster::drawCurrentGear(const Bounds &bounds) {
     const Bounds insetBounds = bounds.inset(10.0f);
     const Bounds title = insetBounds.verticalSplit(0.9f, 1.0f);
-    const Bounds body = insetBounds.verticalSplit(0.0f, 0.9f);
+    const Bounds body = insetBounds.verticalSplit(0.18f, 0.9f);
+    const Bounds advisor = insetBounds.verticalSplit(0.0f, 0.18f);
 
     drawFrame(bounds, 1.0f, m_app->getForegroundColor(), m_app->getBackgroundColor());
     drawCenteredText("Gear", title.inset(10.0f), 24.0f);
@@ -210,11 +211,64 @@ void LoadSimulationCluster::drawCurrentGear(const Bounds &bounds) {
         ? getTransmission()->getGear()
         : -1;
     std::stringstream ss;
-    
+
     if (gear != -1) ss << (gear + 1);
     else ss << "N";
 
     drawCenteredText(ss.str(), body, 64.0f, Bounds::center);
+
+    drawShiftAdvisor(advisor);
+}
+
+// VRUM: Shift Advisor.
+//
+// The number that decides whether a downshift is survivable -- what the crank
+// would spin at in the lower gear -- was computable all along and simply never
+// shown, so the only way to find out was to pull the shift and listen to the
+// limiter. This shows it before you commit.
+//
+// It never blocks anything. The TCU does the blocking; this exists so that when
+// the TCU refuses, you already knew why.
+void LoadSimulationCluster::drawShiftAdvisor(const Bounds &bounds) {
+    Transmission *transmission = getTransmission();
+    Engine *engine = m_simulator->getEngine();
+    if (transmission == nullptr || engine == nullptr) return;
+
+    const int gear = transmission->getGear();
+    const int lower = gear - 1;
+
+    std::stringstream ss;
+    ysVector color = m_app->getForegroundColor();
+
+    if (lower < 0) {
+        // Neutral, or already in first: nothing below to advise on.
+        ss << (gear == -1 ? "NEUTRAL" : "LOWEST GEAR");
+        color = mix(m_app->getBackgroundColor(), m_app->getForegroundColor(), 0.55f);
+    }
+    else {
+        const double predicted = transmission->predictedEngineSpeed(lower);
+        const double ceiling =
+            engine->getIgnitionModule()->getRevLimit()
+            - transmission->getTcuOverRevMargin();
+
+        ss << "v" << (lower + 1) << "  "
+           << std::fixed << std::setprecision(1)
+           << (units::toRpm(predicted) / 1000.0) << "k  ";
+
+        if (predicted > ceiling && ceiling > 0.0) {
+            ss << (transmission->isTcuEnabled() ? "TCU BLOCK" : "OVER-REV");
+            color = m_app->getRed();
+        }
+        else {
+            ss << "SAFE";
+            color = m_app->getGreen();
+        }
+    }
+
+    m_app->getTextRenderer()->SetColor(ysColor::linearToSrgb(color));
+    drawCenteredText(ss.str(), bounds, 16.0f, Bounds::center);
+    m_app->getTextRenderer()->SetColor(
+        ysColor::linearToSrgb(m_app->getForegroundColor()));
 }
 
 void LoadSimulationCluster::drawClutchPressureGauge(const Bounds &bounds) {

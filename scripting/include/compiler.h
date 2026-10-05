@@ -4,6 +4,8 @@
 #include "language_rules.h"
 
 #include "engine_sim.h"
+
+#include <string>
 #include "piranha.h"
 
 #include <vector>
@@ -32,6 +34,12 @@ namespace es_script {
         static Output *output();
 
         void initialize();
+
+        // Adds an absolute directory to search for imports. The built-in paths
+        // are relative to the working directory, which only works when the
+        // binary is launched from the right folder; this lets the caller anchor
+        // the search on the executable's own location instead.
+        void addSearchPath(const std::string &path);
         bool compile(const piranha::IrPath &path);
         Output execute();
         void destroy();

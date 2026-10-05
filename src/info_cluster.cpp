@@ -34,11 +34,13 @@ void InfoCluster::render() {
     const Bounds logoBounds = grid.get(m_bounds, 0, 0, 1, 2);
     drawFrame(logoBounds, 1.0f, m_app->getForegroundColor(), m_app->getBackgroundColor());
 
-    drawModel(
-        m_app->getAssetManager()->GetModelAsset("Logo"),
-        m_app->getForegroundColor(),
-        logoBounds.getPosition(Bounds::center),
-        Point(logoBounds.height(), logoBounds.height()) * 0.75f);
+    // VRUM: "N" monogram in place of engine-sim's "A" logo model.
+    drawAlignedText(
+        "N",
+        logoBounds,
+        logoBounds.height() * 0.8f,
+        Bounds::center,
+        Bounds::center);
 
     const Bounds titleBounds = grid.get(m_bounds, 1, 0, 5, 2);
     drawFrame(titleBounds, 1.0f, m_app->getForegroundColor(), m_app->getBackgroundColor());
@@ -47,19 +49,19 @@ void InfoCluster::render() {
     titleSplit.h_cells = 1;
     titleSplit.v_cells = 3;
     drawAlignedText(
-        "ENGINE SIMULATOR",
+        "VRUM",
         titleSplit.get(titleBounds, 0, 0).inset(10.0f).move({ 0.0f, -21.0f }),
         42.0f,
         Bounds::bl,
         Bounds::bl);
     drawAlignedText(
-        "YOUTUBE/ANGETHEGREAT",
+        "NICCC2007",
         titleSplit.get(titleBounds, 0, 1).inset(10.0f).move({ 0.0f, 5.0f }),
         24.0f,
         Bounds::tl,
         Bounds::tl);
     drawAlignedText(
-        "BUILD: v" + EngineSimApplication::getBuildVersion() + " // " __DATE__,
+        "V12 GINTANI // BUILD v" + EngineSimApplication::getBuildVersion() + " // " __DATE__,
         titleSplit.get(titleBounds, 0, 2).inset(10.0f).move({ 0.0f, 10.0f }),
         16.0f,
         Bounds::tl,

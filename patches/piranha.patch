@@ -1,0 +1,15 @@
+diff --git a/src/path.cpp b/src/path.cpp
+index 6e711184..23eae74f 100644
+--- a/src/path.cpp
++++ b/src/path.cpp
+@@ -73,7 +73,9 @@ std::string piranha::Path::getStem() const {
+ }
+ 
+ bool piranha::Path::isAbsolute() const {
+-    return m_path->is_complete();
++    // is_complete() was removed in newer Boost.Filesystem; is_absolute() is the
++    // modern equivalent (VRUM build uses vcpkg Boost 1.91).
++    return m_path->is_absolute();
+ }
+ 
+ bool piranha::Path::exists() const {

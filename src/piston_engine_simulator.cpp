@@ -101,6 +101,12 @@ void PistonEngineSimulator::loadSimulation(Engine *engine, Vehicle *vehicle, Tra
     m_vehicleDrag.initialize(&m_vehicleMass, m_vehicle);
     m_system->addConstraint(&m_vehicleDrag);
 
+    // Brakes start released; the input handler sets the torque each frame.
+    m_brake.setBody(&m_vehicleMass);
+    m_brake.m_minTorque = 0.0;
+    m_brake.m_maxTorque = 0.0;
+    m_system->addConstraint(&m_brake);
+
     m_vehicleMass.reset();
     m_vehicleMass.m = 1.0;
     m_vehicleMass.I = 1.0;
@@ -304,7 +310,15 @@ void PistonEngineSimulator::simulateStep_() {
     const double fluidTimestep = timestep / m_fluidSimulationSteps;
     for (int i = 0; i < m_fluidSimulationSteps; ++i) {
         for (int j = 0; j < exhaustSystemCount; ++j) {
-            m_engine->getExhaustSystem(j)->process(fluidTimestep);
+            ExhaustSystem *exhaust = m_engine->getExhaustSystem(j);
+            exhaust->process(fluidTimestep);
+
+            // Backfire in the collector: unburnt fuel meeting oxygen in a hot
+            // pipe ignites. No-op unless the engine sets backfire_rate, and
+            // silenced entirely by the runtime master switch.
+            if (m_engine->getBackfireEnabled()) {
+                exhaust->combust(fluidTimestep, m_engine->getFuel());
+            }
         }
 
         for (int j = 0; j < intakeCount; ++j) {
@@ -314,6 +328,79 @@ void PistonEngineSimulator::simulateStep_() {
 
         for (int j = 0; j < cylinderCount; ++j) {
             m_engine->getChamber(j)->flow(fluidTimestep);
+        }
+
+        // Overrun "pop tune": while lifted off at speed, push raw fuel into the
+        // headers so the hot pipe has something to crack on. A closed throttle
+        // admits almost no fuel on its own (measured p_fuel 0.005), which is why
+        // lifting off was silent. Then ignite in the runner+primary rather than
+        // the collector -- the runner is the volume the audio is read from, so a
+        // pop that happens only downstream is barely audible.
+        const double overrunFuelRate = m_engine->getOverrunFuelRate();
+
+        // The master switch has to gate EVERYTHING, including the leftover fuel
+        // already sitting in the pipe -- otherwise turning backfires off still
+        // leaves the pipe cracking as it burns down.
+        const bool backfireEnabled = m_engine->getBackfireEnabled();
+
+        // NB: getThrottle() is PLATE CLOSEDNESS, not pedal -- the linkage sets
+        // it to 1 - s^gamma, so foot-off reads 1.0 and wide-open reads 0.0.
+        // Comparing it directly inverts the condition; use the pedal, which is
+        // what overrun_throttle_threshold describes.
+        const double pedal = m_engine->getSpeedControl();
+        const bool lifted = pedal < m_engine->getOverrunThrottleThreshold();
+        const bool fastEnough =
+            std::abs(m_engine->getSpeed()) > m_engine->getOverrunMinSpeed();
+
+        // Ignition OFF means no fuel is being delivered at all. Without this
+        // check, killing the ignition and letting the engine spin down pumped
+        // raw mixture into a hot pipe and crackled for several seconds.
+        const bool ignitionOn = im->m_enabled;
+
+        // Re-arm on throttle. Crackle is one burst per lift-off; without this
+        // it retriggers continuously the whole way down to a stop.
+        if (!lifted) {
+            m_overrunArmed = true;
+            m_overrunTimer = 0.0;
+        }
+        else if (m_overrunArmed && fastEnough && ignitionOn && backfireEnabled
+                 && overrunFuelRate > 0.0) {
+            m_overrunTimer += fluidTimestep;
+            if (m_overrunTimer > m_engine->getOverrunDuration()) {
+                m_overrunArmed = false;
+            }
+        }
+
+        const bool crackling =
+            backfireEnabled && overrunFuelRate > 0.0
+            && lifted && fastEnough && ignitionOn && m_overrunArmed
+            && !m_engine->getOverrunSuppressed();
+
+        // Cut only a FRACTION of ignition events, so the charge leaves unburnt
+        // carrying oxygen as well as fuel while the engine still makes enough
+        // power to keep itself alive. A total cut stalled it.
+        im->m_ignitionCutFraction =
+            crackling ? m_engine->getOverrunIgnitionCutFraction() : 0.0;
+
+        if (backfireEnabled) {
+            for (int j = 0; j < cylinderCount; ++j) {
+                CombustionChamber *chamber = m_engine->getChamber(j);
+                Piston *piston = m_engine->getPiston(j);
+                CylinderHead *head =
+                    m_engine->getHead(piston->getCylinderBank()->getIndex());
+                ExhaustSystem *exhaust =
+                    head->getExhaustSystem(piston->getCylinderIndex());
+
+                if (crackling) {
+                    chamber->m_exhaustRunnerAndPrimary.injectFuel(
+                        overrunFuelRate * fluidTimestep);
+                }
+
+                exhaust->combustIn(
+                    chamber->m_exhaustRunnerAndPrimary,
+                    fluidTimestep,
+                    m_engine->getFuel());
+            }
         }
     }
 
@@ -371,6 +458,27 @@ void PistonEngineSimulator::writeToSynthesizer() {
     const int exhaustSystemCount = m_engine->getExhaustSystemCount();
     for (int i = 0; i < exhaustSystemCount; ++i) {
         m_exhaustFlowStagingBuffer[i] = 0;
+    }
+
+    // Ramp the hf_gain "bite" in with engine speed. The bite term is a
+    // derivative, and the only thing it has to amplify at low rpm is the fluid
+    // solver's own numerical hash -- the raw exhaust signal at idle carries 24x
+    // more relative energy above 2 kHz than it does at full throttle, purely
+    // because the true signal is so small there. Ramping with rpm is also the
+    // physically right shape: broadband exhaust noise grows steeply with gas
+    // velocity, so a real engine is smooth at idle and harsh at redline.
+    const double biteMin = m_engine->getHfBiteMinSpeed();
+    const double biteMax = m_engine->getHfBiteMaxSpeed();
+    if (biteMax > biteMin) {
+        // filteredEngineSpeed() is in RPM despite the name; the window is stored
+        // in rad/s because the .mr files spell it `N * units.rpm`.
+        const double speed = units::rpm(std::abs(filteredEngineSpeed()));
+        const double t = (speed - biteMin) / (biteMax - biteMin);
+        synthesizer().setBiteScale(
+            static_cast<float>((t < 0.0) ? 0.0 : ((t > 1.0) ? 1.0 : t)));
+    }
+    else {
+        synthesizer().setBiteScale(1.0f);
     }
 
     const double attenuation = std::min(std::abs(filteredEngineSpeed()), 40.0) / 40.0;

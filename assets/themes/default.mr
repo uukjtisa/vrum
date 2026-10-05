@@ -15,17 +15,30 @@ public node use_default_theme {
         torque_units: torque_units,
         power_units: power_units,
         
-        // Default Color Settings
-        color_background: 0x0E1012,
-        color_foreground: 0xFFFFFF,
-        color_shadow: 0x0E1012,
-        color_highlight1: 0xEF4545,
-        color_highlight2: 0xFFFFFF,
-        color_pink: 0xF394BE,
-        color_red: 0xEE4445,
-        color_orange: 0xF4802A,
-        color_yellow: 0xFDBD2E,
-        color_blue: 0x77CEE0,
-        color_green: 0xBDD869
+        // VRUM dark theme. Dark-only by design -- this is an instrument panel,
+        // and the gauges, the oscilloscope trace and the hot-parts shading are
+        // all drawn as light-on-dark, so a light mode would need every one of
+        // them re-authored rather than just inverting two values.
+        //
+        // Background is a near-black with a slight blue cast rather than pure
+        // black: it keeps the panel frames visible without them glowing, and
+        // stops OLED-style smearing on the moving oscilloscope trace.
+        // Foreground is deliberately off-white -- full 0xFFFFFF against this
+        // background is harsh at the small label sizes.
+        color_background: 0x0B0D10,
+        color_foreground: 0xE8ECF2,
+        color_shadow: 0x05070A,
+
+        // Accents are held at similar perceived lightness so no single readout
+        // grabs the eye by accident; the red is the exception, reserved for
+        // redline and recording.
+        color_highlight1: 0xFF5A4E,
+        color_highlight2: 0xE8ECF2,
+        color_pink: 0xF48FB1,
+        color_red: 0xFF5A4E,
+        color_orange: 0xFFA24B,
+        color_yellow: 0xFFD24A,
+        color_blue: 0x63D2E8,
+        color_green: 0x9FE05B
     )
 }

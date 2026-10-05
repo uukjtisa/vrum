@@ -1,4 +1,3 @@
-#include "..\include\engine.h"
 #include "../include/engine.h"
 
 #include "../include/constants.h"
@@ -40,6 +39,21 @@ Engine::Engine() {
     m_initialHighFrequencyGain = 0.01;
     m_initialJitter = 0.5;
     m_initialNoise = 1.0;
+    m_initialHighFrequencyCutoff = 0.0;
+    m_initialHighFrequencyBiteCutoff = 0.0;
+    m_hfBiteMinSpeed = 0.0;
+    m_hfBiteMaxSpeed = 0.0;
+    m_fluidSimulationSteps = 8;
+    m_levelerTarget = 30000.0;
+    m_overrunFuelRate = 0.0;
+    m_overrunThrottleThreshold = 0.15;
+    m_overrunMinSpeed = 0.0;
+    m_overrunDuration = 1.2;
+    m_overrunIgnitionCutFraction = 0.45;
+    // Off at startup: the backfire model is experimental, and an engine that
+    // pops on its own the moment you start it is not the neutral default.
+    // Toggle with O or the BACKFIRE button.
+    m_backfireEnabled = false;
 }
 
 Engine::~Engine() {
@@ -71,6 +85,17 @@ void Engine::initialize(const Parameters &params) {
     m_initialSimulationFrequency = params.initialSimulationFrequency;
     m_initialJitter = params.initialJitter;
     m_initialNoise = params.initialNoise;
+    m_initialHighFrequencyCutoff = params.initialHighFrequencyCutoff;
+    m_initialHighFrequencyBiteCutoff = params.initialHighFrequencyBiteCutoff;
+    m_hfBiteMinSpeed = params.hfBiteMinSpeed;
+    m_hfBiteMaxSpeed = params.hfBiteMaxSpeed;
+    m_fluidSimulationSteps = params.fluidSimulationSteps;
+    m_levelerTarget = params.levelerTarget;
+    m_overrunFuelRate = params.overrunFuelRate;
+    m_overrunThrottleThreshold = params.overrunThrottleThreshold;
+    m_overrunMinSpeed = params.overrunMinSpeed;
+    m_overrunDuration = params.overrunDuration;
+    m_overrunIgnitionCutFraction = params.overrunIgnitionCutFraction;
 
     m_crankshafts = new Crankshaft[m_crankshaftCount];
     m_cylinderBanks = new CylinderBank[m_cylinderBankCount];
@@ -390,7 +415,8 @@ Simulator *Engine::createSimulator(Vehicle *vehicle, Transmission *transmission)
     simulator->initialize(simulatorParams);
 
     simulator->loadSimulation(this, vehicle, transmission);
-    simulator->setFluidSimulationSteps(8);
+    simulator->setFluidSimulationSteps(
+        std::max(1, std::min(m_fluidSimulationSteps, 16)));
 
     return static_cast<Simulator *>(simulator);
 }

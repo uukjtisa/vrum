@@ -1,0 +1,648 @@
+/*
+ * Lamborghini V12 — Gintani straight-pipe screamer
+ * ------------------------------------------------
+ * Authored for VRUM (engine-sim fork) by Niccc2007.
+ *
+ * Real-world target: Lamborghini 6.5L 60-degree naturally-aspirated V12
+ * (as in the Aventador) wearing a Gintani-style straight-through exhaust.
+ *   - Displacement : 6498 cc  (bore 95.0 mm  x  stroke 76.4 mm  ->  541.6 cc/cyl)
+ *   - Compression  : 11.8:1   (chamber_volume ~= 50 cc)
+ *   - Redline      : 8700 rpm
+ *   - Real firing order: 1-12-5-8-3-10-6-7-2-11-4-9
+ *
+ * NOTE on firing order: engine-sim numbers its cylinders by (bank, journal),
+ * not by the manufacturer's 1..12 scheme. The crankshaft geometry and the
+ * even-fire 60-degree ignition schedule below are mechanically identical to a
+ * real 60-degree V12 firing every 60 degrees — it just uses engine-sim's
+ * internal wire names. The engine sounds like a Lambo V12 because the crank,
+ * the 60-degree bank angle, and the even 60-degree firing interval are correct.
+ *
+ * Voice: "straight-pipe screamer" -> minimal-muffling impulse responses, short
+ * free-flowing headers, aggressive cams, and extra combustion randomness for
+ * that crackly Gintani overrun bark.
+ */
+
+import "engine_sim.mr"
+
+units units()
+constants constants()
+impulse_response_library ir_lib()
+label cycle(2 * 360 * units.deg)
+
+private node wires {
+    output wire1a: ignition_wire();
+    output wire2a: ignition_wire();
+    output wire3a: ignition_wire();
+    output wire4a: ignition_wire();
+    output wire5a: ignition_wire();
+    output wire6a: ignition_wire();
+    output wire1b: ignition_wire();
+    output wire2b: ignition_wire();
+    output wire3b: ignition_wire();
+    output wire4b: ignition_wire();
+    output wire5b: ignition_wire();
+    output wire6b: ignition_wire();
+}
+
+// -------------------------------------------------------------------------
+// Cylinder head — high-flow race head for a screaming NA V12
+// -------------------------------------------------------------------------
+private node v12_gintani_head {
+    input intake_camshaft;
+    input exhaust_camshaft;
+    input chamber_volume: 50.0 * units.cc;          // -> ~11.8:1 with 541.6cc swept
+    input intake_runner_volume: 130.0 * units.cc;
+    input intake_runner_cross_section_area: 1.9 * units.inch * 1.9 * units.inch;
+    input exhaust_runner_volume: 42.0 * units.cc;
+    input exhaust_runner_cross_section_area: 2.3 * units.inch * 2.3 * units.inch;
+
+    input flow_attenuation: 1.0;
+    input lift_scale: 1.0;
+    input flip_display: false;
+    alias output __out: head;
+
+    function intake_flow(50 * units.thou)
+    intake_flow
+        .add_flow_sample(0 * lift_scale, 0 * flow_attenuation)
+        .add_flow_sample(50 * lift_scale, 62 * flow_attenuation)
+        .add_flow_sample(100 * lift_scale, 112 * flow_attenuation)
+        .add_flow_sample(150 * lift_scale, 165 * flow_attenuation)
+        .add_flow_sample(200 * lift_scale, 222 * flow_attenuation)
+        .add_flow_sample(250 * lift_scale, 258 * flow_attenuation)
+        .add_flow_sample(300 * lift_scale, 281 * flow_attenuation)
+        .add_flow_sample(350 * lift_scale, 296 * flow_attenuation)
+        .add_flow_sample(400 * lift_scale, 305 * flow_attenuation)
+        .add_flow_sample(450 * lift_scale, 306 * flow_attenuation)
+
+    function exhaust_flow(50 * units.thou)
+    exhaust_flow
+        .add_flow_sample(0 * lift_scale, 0 * flow_attenuation)
+        .add_flow_sample(50 * lift_scale, 40 * flow_attenuation)
+        .add_flow_sample(100 * lift_scale, 78 * flow_attenuation)
+        .add_flow_sample(150 * lift_scale, 122 * flow_attenuation)
+        .add_flow_sample(200 * lift_scale, 172 * flow_attenuation)
+        .add_flow_sample(250 * lift_scale, 210 * flow_attenuation)
+        .add_flow_sample(300 * lift_scale, 236 * flow_attenuation)
+        .add_flow_sample(350 * lift_scale, 250 * flow_attenuation)
+        .add_flow_sample(400 * lift_scale, 260 * flow_attenuation)
+        .add_flow_sample(450 * lift_scale, 262 * flow_attenuation)
+
+    generic_cylinder_head head(
+        chamber_volume: chamber_volume,
+        intake_runner_volume: intake_runner_volume,
+        intake_runner_cross_section_area: intake_runner_cross_section_area,
+        exhaust_runner_volume: exhaust_runner_volume,
+        exhaust_runner_cross_section_area: exhaust_runner_cross_section_area,
+
+        intake_port_flow: intake_flow,
+        exhaust_port_flow: exhaust_flow,
+        valvetrain: standard_valvetrain(
+            intake_camshaft: intake_camshaft,
+            exhaust_camshaft: exhaust_camshaft
+        ),
+        flip_display: flip_display
+    )
+}
+
+// -------------------------------------------------------------------------
+// Camshafts — even-fire 60-degree V12 lobe schedule (matches ignition below)
+// firing sequence: 1a 6b 4a 3b 2a 5b 6a 1b 3a 4b 5a 2b
+// -------------------------------------------------------------------------
+private node v12_gintani_camshaft {
+    input lobe_profile;
+    input intake_lobe_profile: lobe_profile;
+    input exhaust_lobe_profile: lobe_profile;
+    input lobe_separation: 105 * units.deg;
+    input intake_lobe_center: lobe_separation;
+    input exhaust_lobe_center: lobe_separation;
+    input advance: 0 * units.deg;
+    input base_radius: 1.0 * units.inch;
+
+    output intake_cam_0: _intake_cam_0;
+    output exhaust_cam_0: _exhaust_cam_0;
+
+    output intake_cam_1: _intake_cam_1;
+    output exhaust_cam_1: _exhaust_cam_1;
+
+    camshaft_parameters params (
+        advance: advance,
+        base_radius: base_radius
+    )
+
+    camshaft _intake_cam_0(params, lobe_profile: intake_lobe_profile)
+    camshaft _exhaust_cam_0(params, lobe_profile: exhaust_lobe_profile)
+    camshaft _intake_cam_1(params, lobe_profile: intake_lobe_profile)
+    camshaft _exhaust_cam_1(params, lobe_profile: exhaust_lobe_profile)
+
+    label rot360(360 * units.deg)
+
+    _exhaust_cam_0
+        .add_lobe(rot360 - exhaust_lobe_center + 0 * units.deg)
+        .add_lobe(rot360 - exhaust_lobe_center + 240 * units.deg)
+        .add_lobe(rot360 - exhaust_lobe_center + 480 * units.deg)
+        .add_lobe(rot360 - exhaust_lobe_center + 120 * units.deg)
+        .add_lobe(rot360 - exhaust_lobe_center + 600 * units.deg)
+        .add_lobe(rot360 - exhaust_lobe_center + 360 * units.deg)
+    _intake_cam_0
+        .add_lobe(rot360 + intake_lobe_center + 0 * units.deg)
+        .add_lobe(rot360 + intake_lobe_center + 240 * units.deg)
+        .add_lobe(rot360 + intake_lobe_center + 480 * units.deg)
+        .add_lobe(rot360 + intake_lobe_center + 120 * units.deg)
+        .add_lobe(rot360 + intake_lobe_center + 600 * units.deg)
+        .add_lobe(rot360 + intake_lobe_center + 360 * units.deg)
+
+    _exhaust_cam_1
+        .add_lobe(rot360 - exhaust_lobe_center + (360 + 60) * units.deg)
+        .add_lobe(rot360 - exhaust_lobe_center + (600 + 60) * units.deg)
+        .add_lobe(rot360 - exhaust_lobe_center + (120 + 60) * units.deg)
+        .add_lobe(rot360 - exhaust_lobe_center + (480 + 60) * units.deg)
+        .add_lobe(rot360 - exhaust_lobe_center + (240 + 60) * units.deg)
+        .add_lobe(rot360 - exhaust_lobe_center + (0 + 60) * units.deg)
+    _intake_cam_1
+        .add_lobe(rot360 + intake_lobe_center + (360 + 60) * units.deg)
+        .add_lobe(rot360 + intake_lobe_center + (600 + 60) * units.deg)
+        .add_lobe(rot360 + intake_lobe_center + (120 + 60) * units.deg)
+        .add_lobe(rot360 + intake_lobe_center + (480 + 60) * units.deg)
+        .add_lobe(rot360 + intake_lobe_center + (240 + 60) * units.deg)
+        .add_lobe(rot360 + intake_lobe_center + (0 + 60) * units.deg)
+}
+
+// -------------------------------------------------------------------------
+// The engine
+// -------------------------------------------------------------------------
+public node lamborghini_v12_gintani {
+    alias output __out: engine;
+
+    engine engine(
+        name: "Ferrari V12 High Redline",
+        starter_torque: 120 * units.lb_ft,
+        starter_speed: 220 * units.rpm,
+        redline: 8700 * units.rpm,
+        throttle_gamma: 2.0,
+        fuel: fuel(
+            max_turbulence_effect: 10.0,
+            max_dilution_effect: 20.0,
+            burning_efficiency_randomness: 0.35,   // more randomness -> crackly overrun bark
+            max_burning_efficiency: 1.0
+        ),
+        // MEASURED 2026-07-21 (scripts/analyze_sound.py, capture at ~2100 rpm):
+        // the engine's own output was almost entirely below 600 Hz, while
+        // everything above 2 kHz was the auto-leveler amplifying jitter noise
+        // (88% of energy >2 kHz, crest 8.7 dB = hiss, not exhaust). Real Gintani
+        // reference: centroid ~1750 Hz, 27% >2 kHz, crest 9-15 dB.
+        //
+        // So: stop amplifying noise (jitter/noise down), then let the derivative
+        // stage do real work on real signal (hf_gain up).
+        // TUNED HEADLESS against the real Gintani reference (engine-sim-bench,
+        // dyno-held 3000 rpm, hf_gain swept): 0.0005 gives centroid 1721 Hz and
+        // 95% rolloff 4565 Hz vs the reference's 1750 Hz / 4670 Hz.
+        // NOTE the scale: the derivative stage divides by dt (1/44100), so f_p is
+        // ~44100x larger than f. Anything above ~0.02 is fully derivative-
+        // saturated and stops responding -- 0.04 and 0.25 measure identically.
+        // The old 0.08 was 160x too high and deep in that dead zone.
+        hf_gain: 0.003,
+        noise: 0.25,         // was 1.0  -- air noise was swamping the note
+        jitter: 0.0,         // was 0.12 -- the derivative turned this into broadband hiss
+
+        // The old comment here claimed 12000 caused stutter at 8 fluid substeps
+        // (72 kHz of internal gas-system work). At 4 substeps this is 48 kHz --
+        // LESS total work than the old 9000x8 -- while raising the audio Nyquist
+        // from 4.5 kHz to 6 kHz and sharpening the pressure pulse at the source.
+        // Watch the FPS gauge; L+scroll and N+scroll tune both live.
+        simulation_frequency: 12000,
+        fluid_simulation_steps: 4,
+
+        // 0 = auto = 0.45 * simulation_frequency (5.4 kHz here). Upstream
+        // hard-coded this at 1900 Hz, which low-passed the scream out before
+        // hf_gain ever saw it. K+scroll to A/B it live.
+        hf_cutoff: 0,
+
+        // MEASURED: hf_gain differentiates the signal, and a derivative is a
+        // +6 dB/octave amplifier, so the only thing it has to work with at idle
+        // is the fluid solver's own numerical hash -- the raw exhaust signal
+        // carries 24x more relative energy above 2 kHz at idle than at full
+        // throttle purely because the true signal is tiny there. Result was a
+        // metallic clank that buried the note: at 1100 rpm the spectral centroid
+        // sat at 3627 Hz with 93% of all energy above 2 kHz, on an engine whose
+        // firing frequency is 110 Hz. Setting hf_gain to 0 fixed it and killed
+        // the top end with it.
+        //
+        // These two decouple that. The bite now fades in between 1500 and 5500
+        // rpm and is band-limited to 4.5 kHz, so idle is clean (centroid 3627 ->
+        // 116 Hz) while redline keeps the full derivative. Ramping with rpm is
+        // also the physically right shape -- broadband exhaust noise climbs
+        // steeply with gas velocity.
+        hf_bite_cutoff: 4500,
+        hf_bite_min_speed: 1500 * units.rpm,
+        hf_bite_max_speed: 5500 * units.rpm,
+
+        // MEASURED: at the stock 30000 (0.8 dB of headroom) the output hard-clips
+        // 3.2% of samples at wide-open throttle -- the leveler is feedback-only
+        // with no lookahead, so an exhaust transient bigger than its running peak
+        // goes out at the old gain and hits the rail. 20000 clips 0.00% and
+        // restores crest factor 6.7 -> 8.2 dB. Costs ~3.5 dB of output level,
+        // which the volume knob (Z+scroll) gets back cleanly.
+        leveler_target: 20000,
+
+        // OVERRUN "POP TUNE". Lifting off admits almost no fuel on its own
+        // (measured p_fuel 0.005, below the backfire threshold), so decel was
+        // completely silent -- 0 pops. This injects raw fuel into the headers
+        // while lifted above overrun_min_speed, which is exactly what a real
+        // pop tune does. This is what makes downshifts crackle.
+        overrun_fuel_rate: 0.02,
+        overrun_throttle_threshold: 0.15,
+        overrun_min_speed: 2500 * units.rpm,
+        // One burst per lift-off, then silence until you get back on the
+        // throttle -- crackle that runs to a standstill is what made it sound
+        // broken. Cut only 45% of ignition events so the engine survives the
+        // burst; a total cut left it making no power and it stalled.
+        overrun_duration: 1.0,
+        overrun_ignition_cut: 0.45
+    )
+
+    wires wires()
+
+    label stroke(76.4 * units.mm)
+    label bore(95.0 * units.mm)
+    label rod_length(145.0 * units.mm)
+    label rod_mass(520 * units.g)
+    label compression_height(30.0 * units.mm)
+    label crank_mass(38 * units.lb)
+    label flywheel_mass(22 * units.lb)
+    label flywheel_radius(6.0 * units.inch)
+
+    label crank_moment(
+        disk_moment_of_inertia(mass: crank_mass, radius: stroke)
+    )
+    label flywheel_moment(
+        disk_moment_of_inertia(mass: flywheel_mass, radius: flywheel_radius)
+    )
+    label other_moment( // cams, pulleys, etc. [estimated]
+        disk_moment_of_inertia(mass: 1 * units.kg, radius: 1.0 * units.cm)
+    )
+
+    label v_angle(60 * units.deg)
+
+    crankshaft c0(
+        throw: stroke / 2,
+        flywheel_mass: flywheel_mass,
+        mass: crank_mass,
+        friction_torque: 8.0 * units.lb_ft,
+        moment_of_inertia:
+            crank_moment + flywheel_moment + other_moment,
+        position_x: 0.0,
+        position_y: 0.0,
+        tdc: 90 * units.deg + (v_angle / 2.0)
+    )
+
+    // Inline-6-style crank pattern shared across both banks (even-fire 60deg V12)
+    rod_journal rj0(angle: 0 * units.deg)
+    rod_journal rj1(angle: 240 * units.deg)
+    rod_journal rj2(angle: 120 * units.deg)
+    rod_journal rj3(angle: 120 * units.deg)
+    rod_journal rj4(angle: 240 * units.deg)
+    rod_journal rj5(angle: 0 * units.deg)
+    c0
+        .add_rod_journal(rj0)
+        .add_rod_journal(rj1)
+        .add_rod_journal(rj2)
+        .add_rod_journal(rj3)
+        .add_rod_journal(rj4)
+        .add_rod_journal(rj5)
+
+    piston_parameters piston_params(
+        mass: 320 * units.g,
+        compression_height: compression_height,
+        wrist_pin_position: 0.0,
+        displacement: 0.0
+    )
+
+    connecting_rod_parameters cr_params(
+        mass: rod_mass,
+        moment_of_inertia: rod_moment_of_inertia(
+            mass: rod_mass,
+            length: rod_length
+        ),
+        center_of_mass: 0.0,
+        length: rod_length
+    )
+
+    intake intake(
+        plenum_volume: 2.0 * units.L,
+        plenum_cross_section_area: 26.0 * units.cm2,
+        intake_flow_rate: k_carb(1400.0),
+        runner_flow_rate: k_carb(280.0),
+        runner_length: 5.0 * units.inch,
+        idle_flow_rate: k_carb(0.0),
+        idle_throttle_plate_position: 0.9965,
+        velocity_decay: 0.5
+    )
+
+    // Straight-through Gintani headers: short primaries, free-flowing, loud.
+    exhaust_system_parameters es_params(
+        outlet_flow_rate: k_carb(2200.0),
+        primary_tube_length: 14.0 * units.inch,
+        primary_flow_rate: k_carb(900.0),
+        velocity_decay: 1.0,
+
+        // BACKFIRE. Unburnt fuel + leftover oxygen igniting against the hot pipe
+        // wall. The rev limiter cuts spark but NOT fuel, so at the limiter a full
+        // raw charge is pumped straight into the exhaust -- that is the bang.
+        // backfire_rate is the fraction of the pipe's contents consumed per
+        // ignition event, not a rate: fuel accumulates to backfire_fuel_threshold
+        // and then goes off, which is what makes discrete pops rather than a
+        // continuous flame. Measured at the limiter: crest 4.8 -> 9.0 dB.
+        backfire_rate: 0.6,
+        backfire_temperature: 850.0,
+
+        // MEASURED: the pipe always carries leftover fuel from incomplete burns
+        // (p_fuel ~0.009 at steady cruise), so a low threshold pops constantly
+        // while just driving -- 61 events/sec at 4000 rpm WOT, which is a
+        // blowtorch. A backfire needs a SURGE of raw fuel: p_fuel hits ~0.024
+        // when the limiter cuts spark. Threshold sits between the two.
+        backfire_fuel_threshold: 0.018,
+        // Seconds of enforced quiet after a pop, PER BANK. With two banks the
+        // audible rate is roughly 2/refractory, so 0.15 still allowed ~13/sec --
+        // continuous, not discrete. 0.45 gives ~4/sec: distinct bangs.
+        backfire_refractory: 0.45
+    )
+
+    // IR choice, MEASURED 2026-07-21 with scripts/analyze_sound.py:
+    //   minimal_muffling_01  centroid 2951 Hz, 62.6% >2k, 26.4% >4k  <- brightest
+    //   sharp_0 / mm_03      centroid 2195 Hz, 50.9% >2k, 12.6% >4k
+    //   minimal_muffling_02  centroid  585 Hz,  4.8% >2k,  0.4% >4k  (dark)
+    // The previous note here claimed sharp_0 had a "~5.6 kHz centroid" and was
+    // the brightest -- 5609 Hz is its 95% ROLLOFF, not its centroid. Corrected:
+    // minimal_muffling_01 carries twice the energy above 4 kHz.
+    exhaust_system exhaust0(
+        es_params,
+        audio_volume: 1.6,
+        length: 30.0 * units.inch,
+        impulse_response: ir_lib.minimal_muffling_01
+    )
+    exhaust_system exhaust1(
+        es_params,
+        audio_volume: 1.6,
+        length: 31.0 * units.inch,
+        impulse_response: ir_lib.minimal_muffling_01
+    )
+
+    cylinder_bank_parameters bank_params(
+        bore: bore,
+        deck_height: stroke / 2 + rod_length + compression_height
+    )
+
+    label spacing(4.2 * units.inch)
+
+    // EQUAL-LENGTH PRIMARIES -- the single biggest fix found 2026-07-21.
+    // This was `spacing * 6` down to `spacing * 1`, i.e. a 6:1 length ratio
+    // across the twelve cylinders. That is ~1.9 ms of delay spread, which at
+    // 7000 rpm is LONGER THAN ONE FIRING PERIOD (1.43 ms) -- the twelve exhaust
+    // pulses were smeared into each other instead of stacking into a rhythm.
+    // Measured at 7000 rpm WOT, energy in the firing band (650-750 Hz):
+    //     staggered 1..6 :  0.08%      equal :  53.75%   (670x)
+    //     centroid 328 Hz            -> 765 Hz
+    // A real Gintani/race header is equal-length; that is the whole point of it.
+    label primary(spacing * 3)
+
+    cylinder_bank b0(bank_params, angle: (v_angle / 2.0))
+    cylinder_bank b1(bank_params, angle: -(v_angle / 2.0))
+
+    b0
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj0,
+            intake: intake,
+            exhaust_system: exhaust0,
+            ignition_wire: wires.wire1a,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj1,
+            intake: intake,
+            exhaust_system: exhaust0,
+            ignition_wire: wires.wire2a,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj2,
+            intake: intake,
+            exhaust_system: exhaust0,
+            ignition_wire: wires.wire3a,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj3,
+            intake: intake,
+            exhaust_system: exhaust0,
+            ignition_wire: wires.wire4a,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj4,
+            intake: intake,
+            exhaust_system: exhaust0,
+            ignition_wire: wires.wire5a,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj5,
+            intake: intake,
+            exhaust_system: exhaust0,
+            ignition_wire: wires.wire6a,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .set_cylinder_head(
+            v12_gintani_head(
+                intake_camshaft: camshaft.intake_cam_0,
+                exhaust_camshaft: camshaft.exhaust_cam_0,
+                flip_display: true,
+                flow_attenuation: 1.0)
+        )
+
+    b1
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj0,
+            intake: intake,
+            exhaust_system: exhaust1,
+            ignition_wire: wires.wire1b,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj1,
+            intake: intake,
+            exhaust_system: exhaust1,
+            ignition_wire: wires.wire2b,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj2,
+            intake: intake,
+            exhaust_system: exhaust1,
+            ignition_wire: wires.wire3b,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj3,
+            intake: intake,
+            exhaust_system: exhaust1,
+            ignition_wire: wires.wire4b,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj4,
+            intake: intake,
+            exhaust_system: exhaust1,
+            ignition_wire: wires.wire5b,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .add_cylinder(
+            piston: piston(piston_params, blowby: k_28inH2O(0.2)),
+            connecting_rod: connecting_rod(cr_params),
+            rod_journal: rj5,
+            intake: intake,
+            exhaust_system: exhaust1,
+            ignition_wire: wires.wire6b,
+            sound_attenuation: 1.0,
+            primary_length: primary
+        )
+        .set_cylinder_head(
+            v12_gintani_head(
+                intake_camshaft: camshaft.intake_cam_1,
+                exhaust_camshaft: camshaft.exhaust_cam_1,
+                flow_attenuation: 1.0)
+        )
+
+    engine
+        .add_cylinder_bank(b0)
+        .add_cylinder_bank(b1)
+
+    engine.add_crankshaft(c0)
+
+    // Aggressive, high-lift race cams for a top-end screamer.
+    harmonic_cam_lobe intake_lobe(
+        duration_at_50_thou: 238 * units.deg,
+        gamma: 1.0,
+        lift: 14.0 * units.mm,
+        steps: 100
+    )
+    harmonic_cam_lobe exhaust_lobe(
+        duration_at_50_thou: 242 * units.deg,
+        gamma: 1.0,
+        lift: 13.5 * units.mm,
+        steps: 100
+    )
+
+    v12_gintani_camshaft camshaft(
+        lobe_profile: "N/A",
+        intake_lobe_profile: intake_lobe,
+        exhaust_lobe_profile: exhaust_lobe,
+        intake_lobe_center: 96 * units.deg,
+        exhaust_lobe_center: 112 * units.deg,
+        base_radius: 1.0 * units.inch
+    )
+
+    function timing_curve(4000 * units.rpm)
+    timing_curve
+        .add_sample(0000 * units.rpm, 12 * units.deg)
+        .add_sample(2000 * units.rpm, 30 * units.deg)
+        .add_sample(4000 * units.rpm, 40 * units.deg)
+        .add_sample(6000 * units.rpm, 42 * units.deg)
+        .add_sample(9000 * units.rpm, 42 * units.deg)
+
+    ignition_module ignition_module(
+        timing_curve: timing_curve,
+        // NOTE: this, not `redline`, is what the limiter acts on -- redline is
+        // only a gauge marking. Keep them a few hundred rpm apart.
+        rev_limit: 8900 * units.rpm,
+        limiter_duration: 0.08)
+    ignition_module
+        .connect_wire(wires.wire1a, (0) * units.deg)
+        .connect_wire(wires.wire6b, (0 + 60) * units.deg)
+        .connect_wire(wires.wire4a, (120) * units.deg)
+        .connect_wire(wires.wire3b, (120 + 60) * units.deg)
+        .connect_wire(wires.wire2a, (240) * units.deg)
+        .connect_wire(wires.wire5b, (240 + 60) * units.deg)
+        .connect_wire(wires.wire6a, (360) * units.deg)
+        .connect_wire(wires.wire1b, (360 + 60) * units.deg)
+        .connect_wire(wires.wire3a, (480) * units.deg)
+        .connect_wire(wires.wire4b, (480 + 60) * units.deg)
+        .connect_wire(wires.wire5a, (600) * units.deg)
+        .connect_wire(wires.wire2b, (600 + 60) * units.deg)
+
+    engine.add_ignition_module(ignition_module)
+}
+
+// -------------------------------------------------------------------------
+// Vehicle + transmission (Aventador-ish flavour; sound is the priority)
+// -------------------------------------------------------------------------
+private node lambo_vehicle {
+    alias output __out:
+        vehicle(
+            mass: 1625 * units.kg,
+            drag_coefficient: 0.35,
+            cross_sectional_area: (77 * units.inch) * (44 * units.inch),
+            diff_ratio: 3.21,
+            tire_radius: 13.5 * units.inch,
+            rolling_resistance: 250 * units.N
+        );
+}
+
+private node lambo_transmission {
+    alias output __out:
+        transmission(
+            max_clutch_torque: 650 * units.lb_ft,
+            // ISR-style single-clutch box: fast, brutal shifts with a spark
+            // cut on upshift (the Aventador SVJ crack).
+            shift_time: 0.05 * units.sec,
+            upshift_cut: true,
+            launch_control: true,
+            launch_rpm: 4500 * units.rpm,
+            launch_clutch_time: 0.4 * units.sec
+        )
+        .add_gear(3.91)
+        .add_gear(2.44)
+        .add_gear(1.81)
+        .add_gear(1.46)
+        .add_gear(1.19)
+        .add_gear(1.00)
+        .add_gear(0.85);
+}
+
+public node main {
+    set_engine(lamborghini_v12_gintani())
+    set_vehicle(lambo_vehicle())
+    set_transmission(lambo_transmission())
+}

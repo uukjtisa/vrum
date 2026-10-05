@@ -68,6 +68,13 @@ class PistonEngineSimulator : public Simulator {
         double *m_exhaustFlowStagingBuffer;
 
         int m_fluidSimulationSteps;
+
+        // Overrun crackle window. Crackle is a BURST that follows a lift-off and
+        // then stops -- it must not run all the way down to a standstill, and it
+        // must not keep the ignition cut long enough to stall the engine.
+        // Re-arms only when the throttle is opened again.
+        double m_overrunTimer = 0.0;
+        bool m_overrunArmed = false;
 };
 
 #endif /* ATG_ENGINE_SIM_PISTON_ENGINE_SIMULATOR_H */

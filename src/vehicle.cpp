@@ -24,6 +24,7 @@ void Vehicle::initialize(const Parameters &params) {
     m_diffRatio = params.diffRatio;
     m_tireRadius = params.tireRadius;
     m_rollingResistance = params.rollingResistance;
+    m_params = params;
 }
 
 void Vehicle::update(double dt) {
